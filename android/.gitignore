@@ -12,3 +12,6 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Test-only signing key, so test builds update in place. Never use it for a store release.
+!app/signing/test-signing.jks

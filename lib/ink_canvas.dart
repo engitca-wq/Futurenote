@@ -55,7 +55,8 @@ class InkPageView extends StatefulWidget {
   final PenSettings pen;
 
   /// Called with the page's previous strokes after every edit, for undo.
-  final void Function(List<InkStroke> before) onChanged;
+  final void Function(List<InkStroke> before, List<TypedLine> typedBefore)
+  onChanged;
 
   /// When set, a tap on ink reports the stroke instead of drawing a dot.
   final void Function(InkStroke stroke)? onStrokeTap;
@@ -71,6 +72,7 @@ class InkPageView extends StatefulWidget {
 class _InkPageViewState extends State<InkPageView> {
   final _live = ValueNotifier<InkStroke?>(null);
   List<InkStroke>? _before;
+  List<TypedLine>? _typedBefore;
   double _scale = 1;
   bool _erasedAny = false;
   int? _pointer;
@@ -117,6 +119,7 @@ class _InkPageViewState extends State<InkPageView> {
     }
     _pointer = e.pointer;
     _before = List.of(widget.page.strokes);
+    _typedBefore = widget.page.typed;
     final eraser =
         widget.pen.mode == PenMode.eraser ||
         e.kind == PointerDeviceKind.invertedStylus;
@@ -158,9 +161,9 @@ class _InkPageViewState extends State<InkPageView> {
     _live.value = null;
     if (s != null) {
       setState(() => widget.page.strokes = [...widget.page.strokes, s]);
-      widget.onChanged(_before!);
+      widget.onChanged(_before!, _typedBefore!);
     } else if (_erasedAny) {
-      widget.onChanged(_before!);
+      widget.onChanged(_before!, _typedBefore!);
     }
     _before = null;
   }
@@ -171,6 +174,11 @@ class _InkPageViewState extends State<InkPageView> {
     if (keep.length != widget.page.strokes.length) {
       _erasedAny = true;
       setState(() => widget.page.strokes = keep);
+    }
+    final typed = widget.page.typed.where((t) => !t.box.contains(at)).toList();
+    if (typed.length != widget.page.typed.length) {
+      _erasedAny = true;
+      setState(() => widget.page.typed = typed);
     }
   }
 
@@ -223,11 +231,13 @@ class PagePainter extends CustomPainter {
     this.litRange,
     required this.accent,
   }) : strokes = page.strokes,
+       typed = page.typed,
        template = page.template;
 
   final NotePage page;
   final double scale;
   final List<InkStroke> strokes;
+  final List<TypedLine> typed;
   final PageTemplate template;
   final ({int from, int to})? litRange;
   final Color accent;
@@ -246,6 +256,9 @@ class PagePainter extends CustomPainter {
           r != null && s.tool == InkTool.pen && t >= r.from && t <= r.to;
       paintStroke(canvas, s, scale, colorOverride: lit ? accent : null);
     }
+    for (final t in page.typed) {
+      paintTyped(canvas, t, scale);
+    }
   }
 
   @override
@@ -253,6 +266,7 @@ class PagePainter extends CustomPainter {
       old.page != page ||
       old.scale != scale ||
       old.strokes != strokes ||
+      old.typed != typed ||
       old.template != template ||
       old.litRange != litRange;
 }
@@ -269,6 +283,28 @@ class _LivePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_LivePainter old) => true;
+}
+
+void paintTyped(Canvas canvas, TypedLine t, double scale) {
+  final rtl = t.rtl;
+  final tp = TextPainter(
+    text: TextSpan(
+      text: t.text,
+      style: TextStyle(
+        color: Color(t.color),
+        fontSize: (t.box.height * 0.62) * scale,
+        height: 1.2,
+      ),
+    ),
+    textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+    textAlign: rtl ? TextAlign.right : TextAlign.left,
+    maxLines: 1,
+    ellipsis: '…',
+  )..layout(maxWidth: t.box.width * scale);
+  final dx = rtl ? t.box.right * scale - tp.width : t.box.left * scale;
+  final dy = (t.box.top + t.box.height / 2) * scale - tp.height / 2;
+  tp.paint(canvas, Offset(dx, dy));
+  tp.dispose();
 }
 
 void paintTemplate(Canvas canvas, Size size, PageTemplate t, double scale) {

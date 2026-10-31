@@ -125,17 +125,77 @@ class InkStroke {
   }
 }
 
+/// A line of typed text placed on the page, usually where handwriting was
+/// converted. Coordinates are page coordinates.
+class TypedLine {
+  const TypedLine({
+    required this.box,
+    required this.text,
+    this.color = 0xFF1D1F22,
+  });
+
+  final Rect box;
+  final String text;
+  final int color;
+
+  bool get rtl => latinShareOf(text) <= 0.5;
+
+  Map<String, dynamic> toJson() => {
+    'b': [
+      box.left,
+      box.top,
+      box.width,
+      box.height,
+    ].map((v) => (v * 10).round() / 10).toList(),
+    'text': text,
+    'color': color,
+  };
+
+  factory TypedLine.fromJson(Map<String, dynamic> j) {
+    final b = (j['b'] as List).cast<num>();
+    return TypedLine(
+      box: Rect.fromLTWH(
+        b[0].toDouble(),
+        b[1].toDouble(),
+        b[2].toDouble(),
+        b[3].toDouble(),
+      ),
+      text: j['text'] as String,
+      color: j['color'] as int? ?? 0xFF1D1F22,
+    );
+  }
+}
+
+/// Share of letters in [text] that are Latin rather than Arabic.
+double latinShareOf(String text) {
+  var latin = 0, arabic = 0;
+  for (final r in text.runes) {
+    if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) {
+      latin++;
+    } else if (r >= 0x0600 && r <= 0x06FF) {
+      arabic++;
+    }
+  }
+  final total = latin + arabic;
+  return total == 0 ? 0 : latin / total;
+}
+
 class NotePage {
   NotePage({
     required this.id,
     required this.template,
     List<InkStroke>? strokes,
+    List<TypedLine>? typed,
     this.text,
-  }) : strokes = strokes ?? [];
+  }) : strokes = strokes ?? [],
+       typed = typed ?? [];
 
   final String id;
   PageTemplate template;
   List<InkStroke> strokes;
+
+  /// Typed text on the page. Replaced as a whole on every change.
+  List<TypedLine> typed;
 
   /// Last handwriting-to-text result for this page.
   String? text;
@@ -144,6 +204,7 @@ class NotePage {
     'id': id,
     'template': template.name,
     'strokes': [for (final s in strokes) s.toJson()],
+    if (typed.isNotEmpty) 'typed': [for (final t in typed) t.toJson()],
     if (text != null) 'text': text,
   };
 
@@ -153,6 +214,10 @@ class NotePage {
     strokes: [
       for (final s in (j['strokes'] as List? ?? []))
         InkStroke.fromJson(s as Map<String, dynamic>),
+    ],
+    typed: [
+      for (final t in (j['typed'] as List? ?? []))
+        TypedLine.fromJson(t as Map<String, dynamic>),
     ],
     text: j['text'] as String?,
   );

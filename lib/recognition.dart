@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
     as mlkit;
 
+import 'models.dart';
+
 enum ReaderState { preparing, downloading, ready, failed }
 
 /// Reads handwriting on the device with Google ML Kit Digital Ink.
@@ -89,18 +91,7 @@ class HandwritingReader {
 }
 
 /// Share of letters in [text] that are Latin rather than Arabic.
-double latinShare(String text) {
-  var latin = 0, arabic = 0;
-  for (final r in text.runes) {
-    if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) {
-      latin++;
-    } else if (r >= 0x0600 && r <= 0x06FF) {
-      arabic++;
-    }
-  }
-  final total = latin + arabic;
-  return total == 0 ? 0 : latin / total;
-}
+double latinShare(String text) => latinShareOf(text);
 
 /// Splits strokes into written lines by how they overlap vertically, so
 /// large handwriting that crosses ruled lines stays on one line and Arabic

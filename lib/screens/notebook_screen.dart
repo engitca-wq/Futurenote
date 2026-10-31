@@ -32,8 +32,8 @@ class NotebookScreen extends StatefulWidget {
 class _NotebookScreenState extends State<NotebookScreen> {
   final pen = PenSettings();
   late final player = NotePlayer(widget.store);
-  final Map<String, List<List<InkStroke>>> _undo = {};
-  final Map<String, List<List<InkStroke>>> _redo = {};
+  final Map<String, List<_Snapshot>> _undo = {};
+  final Map<String, List<_Snapshot>> _redo = {};
   int _index = 0;
   bool _listenMode = false;
 
@@ -49,6 +49,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
     }
     _index = book.pages.length - 1;
     recorder.addListener(_onRecorder);
+    player.addListener(_onPlayer);
   }
 
   @override
@@ -58,6 +59,16 @@ class _NotebookScreenState extends State<NotebookScreen> {
     player.dispose();
     widget.store.flush();
     super.dispose();
+  }
+
+  void _onPlayer() {
+    final e = player.error;
+    if (e != null && mounted) {
+      player.error = null;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(e)));
+    }
   }
 
   void _onRecorder() {
@@ -70,8 +81,15 @@ class _NotebookScreenState extends State<NotebookScreen> {
     }
   }
 
-  void _changed(List<InkStroke> before) {
-    (_undo[page.id] ??= []).add(before);
+  _Snapshot get _now => (strokes: page.strokes, typed: page.typed);
+
+  void _restore(_Snapshot s) {
+    page.strokes = s.strokes;
+    page.typed = s.typed;
+  }
+
+  void _changed(List<InkStroke> before, List<TypedLine> typedBefore) {
+    (_undo[page.id] ??= []).add((strokes: before, typed: typedBefore));
     if (_undo[page.id]!.length > 100) _undo[page.id]!.removeAt(0);
     _redo[page.id]?.clear();
     widget.store.changed(book);
@@ -83,15 +101,15 @@ class _NotebookScreenState extends State<NotebookScreen> {
 
   void _undoStep() {
     if (!_canUndo) return;
-    (_redo[page.id] ??= []).add(page.strokes);
-    setState(() => page.strokes = _undo[page.id]!.removeLast());
+    (_redo[page.id] ??= []).add(_now);
+    setState(() => _restore(_undo[page.id]!.removeLast()));
     widget.store.changed(book);
   }
 
   void _redoStep() {
     if (!_canRedo) return;
-    (_undo[page.id] ??= []).add(page.strokes);
-    setState(() => page.strokes = _redo[page.id]!.removeLast());
+    (_undo[page.id] ??= []).add(_now);
+    setState(() => _restore(_redo[page.id]!.removeLast()));
     widget.store.changed(book);
   }
 
@@ -180,7 +198,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
 
   Future<void> _record() async {
     if (recorder.recording) {
-      await recorder.stop();
+      await _stopRecording();
       return;
     }
     final mode = await showModalBottomSheet<RecordMode>(
@@ -206,6 +224,31 @@ class _NotebookScreenState extends State<NotebookScreen> {
     if (mode == null) return;
     await player.stop();
     await recorder.start(book, mode);
+  }
+
+  Future<void> _stopRecording() async {
+    final wasLive = recorder.mode == RecordMode.live;
+    final rec = await recorder.stop();
+    if (!mounted || rec == null) return;
+    if (rec.transcript.isNotEmpty) {
+      _recordings();
+    } else if (wasLive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'ما اتفهمش أي كلام. اتكلم قريب من الموبايل، واتأكد إن النت شغال.',
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'اتحفظ التسجيل. اضغط زرار الإيد وبعدين أي كلمة كتبتها عشان تسمع.',
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> _onStrokeTap(InkStroke s) async {
@@ -237,12 +280,74 @@ class _NotebookScreenState extends State<NotebookScreen> {
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (_) => _TextSheet(
-        page: page,
-        onSave: (text) {
-          page.text = text;
-          widget.store.changed(book);
-        },
+      builder: (_) => _TextSheet(page: page, onInsert: _insertText),
+    );
+  }
+
+  /// Puts typed lines under the handwriting, on the ruled lines, keeping the
+  /// ink as it is. Continues on a new page when there is no room left.
+  void _insertText(List<String> lines) {
+    if (lines.isEmpty) return;
+    const rule = 56.0, firstRule = 110.0, h = 50.0;
+    var target = page;
+    var bottom = 0.0;
+    for (final s in target.strokes) {
+      if (s.points.isNotEmpty && s.bounds.bottom > bottom) {
+        bottom = s.bounds.bottom;
+      }
+    }
+    for (final t in target.typed) {
+      bottom = bottom > t.box.bottom ? bottom : t.box.bottom;
+    }
+    var y = firstRule;
+    while (y - h < bottom + 12) {
+      y += rule;
+    }
+    final placed = <TypedLine>[];
+    final overflow = <String>[];
+    for (final text in lines) {
+      if (y > kPageHeight - 40) {
+        overflow.add(text);
+        continue;
+      }
+      placed.add(
+        TypedLine(
+          box: Rect.fromLTWH(60, y - h, kPageWidth - 120, h),
+          text: text,
+        ),
+      );
+      y += rule;
+    }
+    (_undo[target.id] ??= []).add(_now);
+    _redo[target.id]?.clear();
+    setState(() {
+      target.typed = [...target.typed, ...placed];
+      target.text = lines.join('\n');
+      if (overflow.isNotEmpty) {
+        final next = NotePage(id: newId(), template: target.template);
+        next.typed = [
+          for (var i = 0; i < overflow.length; i++)
+            TypedLine(
+              box: Rect.fromLTWH(
+                60,
+                firstRule + i * rule - h,
+                kPageWidth - 120,
+                h,
+              ),
+              text: overflow[i],
+            ),
+        ];
+        book.pages.insert(_index + 1, next);
+      }
+    });
+    widget.store.changed(book, immediate: true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          overflow.isEmpty
+              ? 'اتحط النص تحت الكتابة. زرار التراجع يشيله.'
+              : 'اتحط النص تحت الكتابة، والباقي في صفحة جديدة بعدها.',
+        ),
       ),
     );
   }
@@ -328,7 +433,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
               recording: recorder.recording,
               onRecord: _record,
             ),
-            if (recorder.recording) _RecordingBar(recorder: recorder),
+            if (recorder.recording)
+              _RecordingBar(recorder: recorder, onStop: _stopRecording),
             ListenableBuilder(
               listenable: player,
               builder: (_, _) => player.current == null
@@ -390,6 +496,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
     );
   }
 }
+
+typedef _Snapshot = ({List<InkStroke> strokes, List<TypedLine> typed});
 
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
@@ -530,8 +638,9 @@ String clock(Duration d) {
 }
 
 class _RecordingBar extends StatelessWidget {
-  const _RecordingBar({required this.recorder});
+  const _RecordingBar({required this.recorder, required this.onStop});
   final NoteRecorder recorder;
+  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -568,7 +677,7 @@ class _RecordingBar extends StatelessWidget {
               style: theme.textTheme.bodySmall,
             ),
           ),
-          TextButton(onPressed: recorder.stop, child: const Text('إيقاف')),
+          TextButton(onPressed: onStop, child: const Text('إيقاف')),
         ],
       ),
     );
@@ -659,9 +768,9 @@ class _PageBar extends StatelessWidget {
 /// Reads every written line of a page and lets the user pick between the
 /// readings before copying or saving the text.
 class _TextSheet extends StatefulWidget {
-  const _TextSheet({required this.page, required this.onSave});
+  const _TextSheet({required this.page, required this.onInsert});
   final NotePage page;
-  final void Function(String text) onSave;
+  final void Function(List<String> lines) onInsert;
 
   @override
   State<_TextSheet> createState() => _TextSheetState();
@@ -797,10 +906,10 @@ class _TextSheetState extends State<_TextSheet> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('حفظ مع الصفحة'),
+                  icon: const Icon(Icons.vertical_align_bottom),
+                  label: const Text('إدراج تحت الكتابة'),
                   onPressed: () {
-                    widget.onSave(_text);
+                    widget.onInsert(_text.split('\n'));
                     Navigator.pop(context);
                   },
                 ),

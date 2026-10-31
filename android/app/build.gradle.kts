@@ -29,11 +29,24 @@ android {
         versionName = flutter.versionName
     }
 
+    // Test builds must all carry the same signature, or Android refuses to
+    // install an update over the previous version. CI points these variables
+    // at a fixed keystore; local builds without them use the debug key.
+    val keystorePath = System.getenv("FN_KEYSTORE")
+    signingConfigs {
+        if (keystorePath != null && file(keystorePath).exists()) {
+            create("fixed") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("FN_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("FN_KEY_ALIAS") ?: "futurenote"
+                keyPassword = System.getenv("FN_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("fixed") ?: signingConfigs.getByName("debug")
             // ML Kit registers its components by reflection at app start;
             // shrinking strips them and the app closes on launch.
             isMinifyEnabled = false

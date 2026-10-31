@@ -24,7 +24,11 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - run: flutter build apk --release
+      - name: Build release APK
+        env:
+          FN_KEYSTORE: ${{ github.workspace }}/android/app/signing/test-signing.jks
+          FN_KEYSTORE_PASSWORD: futurenote-test
+        run: flutter build apk --release --build-number=${{ github.run_number }}
       - run: cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/futurenote.apk
       - uses: actions/upload-artifact@v4
         with:

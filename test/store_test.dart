@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' show Rect;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:futurenote/models.dart';
@@ -22,6 +23,12 @@ void main() {
       ),
     ];
     book.pages.first.text = 'محمد قال نبدأ';
+    book.pages.first.typed = [
+      const TypedLine(
+        box: Rect.fromLTWH(60, 200, 880, 50),
+        text: 'محمد قال نبدأ',
+      ),
+    ];
     book.recordings.add(
       Recording(
         id: 'r1',
@@ -41,6 +48,10 @@ void main() {
     expect(copy.pages.first.template, PageTemplate.grid);
     final s = copy.pages.first.strokes.single;
     expect(s.points.length, 2);
+    final typed = copy.pages.first.typed.single;
+    expect(typed.text, 'محمد قال نبدأ');
+    expect(typed.box.top, 200);
+    expect(typed.rtl, isTrue);
     expect(s.points.first.x, 10);
     expect(s.points.first.pressure, closeTo(0.4, 0.001));
     expect(copy.recordings.single.transcript.single.text, 'صباح الخير');
