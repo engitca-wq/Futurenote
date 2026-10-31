@@ -5,6 +5,9 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+
+import 'recognition.dart';
+
 import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
     as mlkit;
 
@@ -84,46 +87,6 @@ class StrokeData {
       ((bounds.center.dy - kTopMargin) / kLineHeight).floor().clamp(0, 999);
 }
 
-/// Splits strokes into written lines by how they overlap vertically, so
-/// large handwriting that crosses the ruled lines stays on one line and
-/// Arabic dots and marks join the word they belong to.
-List<List<StrokeData>> groupIntoLines(List<StrokeData> strokes) {
-  final lines = <({List<StrokeData> strokes, Rect box})>[];
-  for (final s in strokes.where((s) => s.points.isNotEmpty)) {
-    final b = s.bounds;
-    final small = b.height < 18 && b.width < 18;
-    var best = -1;
-    var bestScore = 0.0;
-    for (var i = 0; i < lines.length; i++) {
-      final l = lines[i].box;
-      final overlap = math.min(b.bottom, l.bottom) - math.max(b.top, l.top);
-      double score;
-      if (small) {
-        // A dot or hamza sits just above or below its letters.
-        final reach = l.inflate(l.height * 0.6);
-        score = reach.contains(b.center)
-            ? 1 / (1 + (b.center.dy - l.center.dy).abs())
-            : 0;
-      } else {
-        score = overlap / math.max(1, math.min(b.height, l.height));
-        if (score < 0.35) score = 0;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        best = i;
-      }
-    }
-    if (best == -1) {
-      lines.add((strokes: [s], box: b));
-    } else {
-      final l = lines[best];
-      lines[best] = (strokes: [...l.strokes, s], box: l.box.expandToInclude(b));
-    }
-  }
-  lines.sort((a, b) => a.box.top.compareTo(b.box.top));
-  return [for (final l in lines) l.strokes];
-}
-
 class LineResult {
   LineResult(this.line, this.candidates, {required this.ruled}) : chosen = 0;
   final int line;
@@ -135,16 +98,6 @@ class LineResult {
   String get text => candidates.isEmpty ? '' : candidates[chosen];
 }
 
-enum ModelState { checking, missing, downloading, ready, failed }
-
-class Language {
-  const Language(this.code, this.label);
-  final String code;
-  final String label;
-}
-
-const languages = [Language('ar', 'العربية'), Language('en', 'English')];
-
 class InkLabPage extends StatefulWidget {
   const InkLabPage({super.key});
 
@@ -153,10 +106,7 @@ class InkLabPage extends StatefulWidget {
 }
 
 class _InkLabPageState extends State<InkLabPage> {
-  final _models = mlkit.DigitalInkRecognizerModelManager();
-  mlkit.DigitalInkRecognizer? _recognizer;
-  Language _lang = languages.first;
-  ModelState _modelState = ModelState.checking;
+  final _reader = HandwritingReader.instance;
 
   final List<StrokeData> _strokes = [];
   final List<List<StrokeData>> _undo = [];
@@ -175,59 +125,21 @@ class _InkLabPageState extends State<InkLabPage> {
   @override
   void initState() {
     super.initState();
-    _prepareModel();
+    _reader.state.addListener(_onReader);
+    _reader.prepare();
   }
 
   @override
   void dispose() {
     _idle?.cancel();
-    _recognizer?.close();
+    _reader.state.removeListener(_onReader);
     super.dispose();
   }
 
-  Future<void> _prepareModel() async {
-    setState(() => _modelState = ModelState.checking);
-    try {
-      final ok = await _models.isModelDownloaded(_lang.code);
-      if (ok) {
-        _useRecognizer();
-      } else {
-        setState(() => _modelState = ModelState.missing);
-        await _download();
-      }
-    } catch (_) {
-      setState(() => _modelState = ModelState.failed);
-    }
-  }
-
-  Future<void> _download() async {
-    setState(() => _modelState = ModelState.downloading);
-    try {
-      final ok = await _models.downloadModel(_lang.code, isWifiRequired: false);
-      if (ok) {
-        _useRecognizer();
-      } else {
-        setState(() => _modelState = ModelState.failed);
-      }
-    } catch (_) {
-      setState(() => _modelState = ModelState.failed);
-    }
-  }
-
-  void _useRecognizer() {
-    _recognizer?.close();
-    _recognizer = mlkit.DigitalInkRecognizer(languageCode: _lang.code);
-    setState(() => _modelState = ModelState.ready);
-    if (_strokes.isNotEmpty) _recognize();
-  }
-
-  void _switchLanguage(Language l) {
-    if (l.code == _lang.code) return;
-    setState(() {
-      _lang = l;
-      _results = [];
-    });
-    _prepareModel();
+  void _onReader() {
+    if (!mounted) return;
+    setState(() {});
+    if (_reader.ready && _strokes.isNotEmpty) _recognize();
   }
 
   // ---------- pen input ----------
@@ -309,15 +221,14 @@ class _InkLabPageState extends State<InkLabPage> {
   // ---------- recognition ----------
 
   Future<void> _recognize() async {
-    final rec = _recognizer;
-    if (rec == null || _modelState != ModelState.ready || _busy) return;
+    if (!_reader.ready || _busy) return;
     if (_strokes.isEmpty) {
       setState(() => _results = []);
       return;
     }
     setState(() => _busy = true);
     final watch = Stopwatch()..start();
-    final lines = groupIntoLines(_strokes);
+    final lines = groupIntoLines(_strokes, (s) => s.bounds);
     final previous = {for (final r in _results) r.line: r};
     final results = <LineResult>[];
     var preContext = '';
@@ -326,25 +237,12 @@ class _InkLabPageState extends State<InkLabPage> {
       final box = group
           .map((s) => s.bounds)
           .reduce((a, b) => a.expandToInclude(b));
-      final ink = mlkit.Ink()
-        ..strokes = [
-          for (final s in group) mlkit.Stroke()..points = List.of(s.points),
-        ];
       try {
-        final candidates = await rec.recognize(
-          ink,
-          context: mlkit.DigitalInkRecognitionContext(
-            preContext: preContext,
-            writingArea: mlkit.WritingArea(
-              width: _canvasSize.width,
-              height: math.max(box.height, kLineHeight),
-            ),
-          ),
+        final texts = await _reader.readLine(
+          [for (final s in group) List.of(s.points)],
+          area: Size(_canvasSize.width, math.max(box.height, kLineHeight)),
+          preContext: preContext,
         );
-        final texts = [for (final c in candidates) c.text]
-            .where((t) => t.trim().isNotEmpty)
-            .take(5)
-            .toList();
         final r = LineResult(line, texts, ruled: group.first.line);
         final old = previous[line];
         if (old != null &&
@@ -445,22 +343,6 @@ class _InkLabPageState extends State<InkLabPage> {
             ),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsetsDirectional.only(end: 12),
-            child: SegmentedButton<String>(
-              showSelectedIcon: false,
-              segments: [
-                for (final l in languages)
-                  ButtonSegment(value: l.code, label: Text(l.label)),
-              ],
-              selected: {_lang.code},
-              onSelectionChanged: (s) => _switchLanguage(
-                languages.firstWhere((l) => l.code == s.first),
-              ),
-            ),
-          ),
-        ],
       ),
       body: SafeArea(
         child: LayoutBuilder(
@@ -502,26 +384,30 @@ class _InkLabPageState extends State<InkLabPage> {
   }
 
   Widget _buildModelBanner() {
-    final (String? text, bool spinner, bool retry) = switch (_modelState) {
-      ModelState.checking => ('جارٍ تجهيز محرك القراءة…', true, false),
-      ModelState.missing || ModelState.downloading => (
-        'جارٍ تحميل محرك ${_lang.label} (مرة واحدة، حوالي 20 ميجا)…',
+    final (
+      String? text,
+      bool spinner,
+      bool retry,
+    ) = switch (_reader.state.value) {
+      ReaderState.preparing => ('جارٍ تجهيز محرك القراءة…', true, false),
+      ReaderState.downloading => (
+        'جارٍ تحميل محرك القراءة العربي والإنجليزي (مرة واحدة)…',
         true,
         false,
       ),
-      ModelState.failed => (
+      ReaderState.failed => (
         'تعذّر تحميل محرك القراءة. تأكد من الاتصال بالإنترنت.',
         false,
         true,
       ),
-      ModelState.ready => (null, false, false),
+      ReaderState.ready => (null, false, false),
     };
     if (text == null) return const SizedBox.shrink();
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: _modelState == ModelState.failed
+        color: _reader.state.value == ReaderState.failed
             ? const Color(0xFFFBEBEB)
             : const Color(0xFFE3ECE8),
         borderRadius: BorderRadius.circular(12),
@@ -538,7 +424,7 @@ class _InkLabPageState extends State<InkLabPage> {
           Expanded(child: Text(text)),
           if (retry)
             TextButton(
-              onPressed: _prepareModel,
+              onPressed: _reader.retry,
               child: const Text('إعادة المحاولة'),
             ),
         ],
@@ -679,8 +565,7 @@ class _InkLabPageState extends State<InkLabPage> {
                 const Spacer(),
                 if (!_auto)
                   FilledButton.icon(
-                    onPressed:
-                        _modelState == ModelState.ready && _strokes.isNotEmpty
+                    onPressed: _reader.ready && _strokes.isNotEmpty
                         ? _recognize
                         : null,
                     icon: const Icon(Icons.text_fields),
