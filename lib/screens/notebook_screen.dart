@@ -3,8 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../ai.dart';
+import '../export.dart';
+import '../images.dart';
 import '../ink_canvas.dart';
 import '../models.dart';
 import '../recognition.dart';
@@ -34,8 +37,9 @@ class NotebookScreen extends StatefulWidget {
 class _NotebookScreenState extends State<NotebookScreen> {
   final pen = PenSettings();
   late final player = NotePlayer(widget.store);
-  final Map<String, List<_Snapshot>> _undo = {};
-  final Map<String, List<_Snapshot>> _redo = {};
+  final Map<String, List<PageContent>> _undo = {};
+  final Map<String, List<PageContent>> _redo = {};
+  final selection = Selection();
   int _index = 0;
   bool _listenMode = false;
 
@@ -58,6 +62,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
   void dispose() {
     recorder.removeListener(_onRecorder);
     pen.dispose();
+    selection.dispose();
     player.dispose();
     widget.store.flush();
     super.dispose();
@@ -83,15 +88,15 @@ class _NotebookScreenState extends State<NotebookScreen> {
     }
   }
 
-  _Snapshot get _now => (strokes: page.strokes, typed: page.typed);
+  PageContent get _now => page.content;
 
-  void _restore(_Snapshot s) {
-    page.strokes = s.strokes;
-    page.typed = s.typed;
+  void _restore(PageContent s) {
+    selection.clear();
+    page.content = s;
   }
 
-  void _changed(List<InkStroke> before, List<TypedLine> typedBefore) {
-    (_undo[page.id] ??= []).add((strokes: before, typed: typedBefore));
+  void _changed(PageContent before) {
+    (_undo[page.id] ??= []).add(before);
     if (_undo[page.id]!.length > 100) _undo[page.id]!.removeAt(0);
     _redo[page.id]?.clear();
     widget.store.changed(book);
@@ -117,6 +122,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
 
   void _goTo(int i) {
     if (i < 0 || i >= book.pages.length) return;
+    selection.clear();
     setState(() => _index = i);
   }
 
@@ -282,19 +288,51 @@ class _NotebookScreenState extends State<NotebookScreen> {
   /// Text tool: type (or paste) text where the page was tapped, or edit the
   /// typed line that was tapped.
   Future<void> _typeAt(Offset at, TypedLine? hit) async {
+    if (hit != null && hit.todo) {
+      // A tap on the check box ticks the task instead of editing it.
+      final side = hit.box.height * 0.5 + 12;
+      final onBox = hit.rtl
+          ? at.dx > hit.box.right - side
+          : at.dx < hit.box.left + side;
+      if (onBox) {
+        _changed(page.content);
+        setState(() {
+          page.typed = [
+            for (final t in page.typed)
+              identical(t, hit) ? t.copyWith(done: !t.done) : t,
+          ];
+        });
+        return;
+      }
+    }
     final controller = TextEditingController(text: hit?.text ?? '');
+    var todo = hit?.todo ?? false;
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(hit == null ? 'اكتب نص' : 'تعديل النص'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          minLines: 2,
-          maxLines: 8,
-          decoration: const InputDecoration(
-            hintText: 'اكتب أو الصق النص هنا',
-            border: OutlineInputBorder(),
+        content: StatefulBuilder(
+          builder: (context, setLocal) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 2,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  hintText: 'اكتب أو الصق النص هنا',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: todo,
+                onChanged: (v) => setLocal(() => todo = v ?? false),
+                title: const Text('مربع مهمة'),
+                subtitle: const Text('كل سطر يبقى مهمة تتعلّم عليها'),
+              ),
+            ],
           ),
         ),
         actions: [
@@ -333,6 +371,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
             box: Rect.fromLTWH(60, y + i * rule - h, kPageWidth - 120, h),
             text: lines[i],
             color: pen.color,
+            todo: todo,
+            done: todo && (hit?.done ?? false) && lines.length == 1,
           ),
     ];
     (_undo[page.id] ??= []).add(_now);
@@ -345,6 +385,74 @@ class _NotebookScreenState extends State<NotebookScreen> {
       ];
     });
     widget.store.changed(book);
+  }
+
+  Future<void> _addImage(ImageSource source) async {
+    final XFile? picked;
+    try {
+      picked = await ImagePicker().pickImage(source: source, maxWidth: 2000);
+    } catch (e) {
+      _toast(
+        'مش قادر أفتح ${source == ImageSource.camera ? 'الكاميرا' : 'الصور'}: $e',
+      );
+      return;
+    }
+    if (picked == null || !mounted) return;
+    final (file, size) = await ImageStore.instance.add(picked.path);
+    // Fit inside 70% of the page width, centred near the top third.
+    var w = kPageWidth * 0.7, h = w * size.height / size.width;
+    if (h > kPageHeight * 0.5) {
+      h = kPageHeight * 0.5;
+      w = h * size.width / size.height;
+    }
+    final img = PageImage(
+      file: file,
+      box: Rect.fromLTWH((kPageWidth - w) / 2, 160, w, h),
+    );
+    _changed(page.content);
+    setState(() => page.images = [...page.images, img]);
+    pen.mode = PenMode.lasso;
+    selection.select(page, [
+      img.box.topLeft,
+      img.box.topRight,
+      img.box.bottomRight,
+      img.box.bottomLeft,
+    ]);
+    _toast('اسحب الصورة عشان تحرّكها، والدايرة اللي في الركن تكبّرها.');
+  }
+
+  void _toast(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _export(Future<void> Function() job) async {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      await job();
+    } catch (e) {
+      _toast('التصدير ما اشتغلش: $e');
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  void _selectionEdit(PageContent? before) {
+    if (before == null) return;
+    _changed(before);
+  }
+
+  void _paste() {
+    final clip = Selection.clipboard;
+    if (clip == null) return;
+    pen.mode = PenMode.lasso;
+    _changed(selection.paste(page, clip, const Offset(30, 30)));
   }
 
   void _assistant() {
@@ -494,11 +602,48 @@ class _NotebookScreenState extends State<NotebookScreen> {
                   setState(() {});
                 case 'rename':
                   _rename();
+                case 'gallery':
+                  _addImage(ImageSource.gallery);
+                case 'camera':
+                  _addImage(ImageSource.camera);
+                case 'sharePage':
+                  _export(() => sharePageImage(book, _index));
+                case 'sharePdf':
+                  _export(() => shareNotebookPdf(book));
                 default:
                   _setTemplate(PageTemplate.byName(v));
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'gallery',
+                child: ListTile(
+                  leading: Icon(Icons.image_outlined),
+                  title: Text('صورة من المعرض'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'camera',
+                child: ListTile(
+                  leading: Icon(Icons.photo_camera_outlined),
+                  title: Text('صورة بالكاميرا'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'sharePage',
+                child: ListTile(
+                  leading: Icon(Icons.ios_share),
+                  title: Text('مشاركة الصفحة صورة'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'sharePdf',
+                child: ListTile(
+                  leading: Icon(Icons.picture_as_pdf_outlined),
+                  title: Text('مشاركة الدفتر PDF'),
+                ),
+              ),
+              const PopupMenuDivider(),
               PopupMenuItem(
                 value: 'recs',
                 child: Text('التسجيلات (${book.recordings.length})'),
@@ -535,6 +680,15 @@ class _NotebookScreenState extends State<NotebookScreen> {
               recording: recorder.recording,
               onRecord: _record,
             ),
+            ListenableBuilder(
+              listenable: Listenable.merge([selection, pen]),
+              builder: (_, _) => _SelectionBar(
+                selection: selection,
+                lassoOn: pen.mode == PenMode.lasso,
+                onEdit: _selectionEdit,
+                onPaste: _paste,
+              ),
+            ),
             if (recorder.recording)
               _RecordingBar(recorder: recorder, onStop: _stopRecording),
             ListenableBuilder(
@@ -565,6 +719,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
                               key: ValueKey(page.id),
                               page: page,
                               pen: pen,
+                              selection: selection,
                               onChanged: _changed,
                               onStrokeTap: _listenMode ? _onStrokeTap : null,
                               onTextTap: _typeAt,
@@ -619,7 +774,86 @@ List<String> wrapLine(String line, {int max = 48}) {
   return out;
 }
 
-typedef _Snapshot = ({List<InkStroke> strokes, List<TypedLine> typed});
+/// Actions for what the lasso selected, or a paste button.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.selection,
+    required this.lassoOn,
+    required this.onEdit,
+    required this.onPaste,
+  });
+
+  final Selection selection;
+  final bool lassoOn;
+  final void Function(PageContent? before) onEdit;
+  final VoidCallback onPaste;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (!selection.active && !(lassoOn && Selection.clipboard != null)) {
+      if (lassoOn) {
+        return Container(
+          width: double.infinity,
+          color: theme.colorScheme.secondaryContainer,
+          padding: const EdgeInsets.all(8),
+          child: const Text(
+            'لفّ بالقلم حوالين الحاجة اللي عايز تحددها',
+            textAlign: TextAlign.center,
+          ),
+        );
+      }
+      return const SizedBox.shrink();
+    }
+    Widget action(IconData icon, String label, VoidCallback onTap) =>
+        TextButton.icon(
+          onPressed: onTap,
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+        );
+    return Container(
+      width: double.infinity,
+      color: theme.colorScheme.secondaryContainer,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(
+          children: [
+            if (selection.active) ...[
+              action(Icons.copy, 'نسخ', () {
+                selection.copy();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('اتنسخ. تقدر تلصقه في أي صفحة.'),
+                  ),
+                );
+                (context as Element).markNeedsBuild();
+              }),
+              action(Icons.content_cut, 'قص', () {
+                selection.copy();
+                onEdit(selection.delete());
+              }),
+              action(
+                Icons.control_point_duplicate,
+                'تكرار',
+                () => onEdit(selection.duplicate()),
+              ),
+              action(
+                Icons.delete_outline,
+                'حذف',
+                () => onEdit(selection.delete()),
+              ),
+            ],
+            if (Selection.clipboard != null)
+              action(Icons.content_paste, 'لصق', onPaste),
+            if (selection.active)
+              action(Icons.close, 'إلغاء التحديد', selection.clear),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
@@ -667,6 +901,35 @@ class _Toolbar extends StatelessWidget {
                 tool(PenMode.highlighter, Icons.border_color, 'هايلايتر'),
                 tool(PenMode.eraser, Icons.cleaning_services_outlined, 'ممحاة'),
                 tool(PenMode.text, Icons.keyboard_outlined, 'كتابة بالكيبورد'),
+                tool(PenMode.lasso, Icons.highlight_alt, 'تحديد (لاسو)'),
+                PopupMenuButton<ShapeKind>(
+                  tooltip: 'أشكال',
+                  initialValue: pen.shape,
+                  onSelected: (k) {
+                    if (listenMode) onListenMode();
+                    pen.shape = k;
+                  },
+                  itemBuilder: (_) => [
+                    for (final k in ShapeKind.values)
+                      PopupMenuItem(
+                        value: k,
+                        child: ListTile(
+                          leading: Icon(k.icon),
+                          title: Text(k.label),
+                        ),
+                      ),
+                  ],
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: pen.mode == PenMode.shape && !listenMode
+                          ? theme.colorScheme.secondaryContainer
+                          : null,
+                    ),
+                    child: Icon(pen.shape.icon),
+                  ),
+                ),
                 const _Divider(),
                 for (final c in PenSettings.inkColors)
                   GestureDetector(

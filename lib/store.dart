@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'images.dart';
 import 'models.dart';
 
 /// Keeps every notebook in memory and writes each one to its own JSON file
@@ -40,6 +41,7 @@ class NotebookStore extends ChangeNotifier {
       '${(_rootOverride ?? await getApplicationDocumentsDirectory()).path}/notebooks',
     );
     await _dir.create(recursive: true);
+    ImageStore.instance.root = Directory('${_dir.path}/images');
     for (final f in _dir.listSync().whereType<File>().where(
       (f) => f.path.endsWith('.json'),
     )) {
@@ -131,6 +133,10 @@ class NotebookStore extends ChangeNotifier {
     _writing.remove(book.id);
     final file = File('${_dir.path}/${book.id}.json');
     if (await file.exists()) await file.delete();
+    await ImageStore.instance.remove([
+      for (final p in book.pages)
+        for (final i in p.images) i.file,
+    ]);
     final audio = audioDir(book.id);
     if (await audio.exists()) await audio.delete(recursive: true);
   }

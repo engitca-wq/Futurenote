@@ -63,6 +63,26 @@ class InkStroke {
     return _bounds = Rect.fromLTRB(l, t, r, b);
   }
 
+  /// A copy moved by [d] and scaled by [k] around [origin].
+  InkStroke transformed(
+    Offset d, {
+    double k = 1,
+    Offset origin = Offset.zero,
+  }) => InkStroke(
+    tool: tool,
+    color: color,
+    width: width * k,
+    points: [
+      for (final p in points)
+        InkPoint(
+          origin.dx + (p.x - origin.dx) * k + d.dx,
+          origin.dy + (p.y - origin.dy) * k + d.dy,
+          p.t,
+          p.pressure,
+        ),
+    ],
+  );
+
   /// Call after adding points while the stroke is being drawn.
   void invalidate() => _bounds = null;
 
@@ -132,11 +152,26 @@ class TypedLine {
     required this.box,
     required this.text,
     this.color = 0xFF1D1F22,
+    this.todo = false,
+    this.done = false,
   });
 
   final Rect box;
   final String text;
   final int color;
+
+  /// Shown with a check box in front; [done] ticks it and strikes the text.
+  final bool todo;
+  final bool done;
+
+  TypedLine copyWith({Rect? box, String? text, bool? todo, bool? done}) =>
+      TypedLine(
+        box: box ?? this.box,
+        text: text ?? this.text,
+        color: color,
+        todo: todo ?? this.todo,
+        done: done ?? this.done,
+      );
 
   bool get rtl => latinShareOf(text) <= 0.5;
 
@@ -149,6 +184,8 @@ class TypedLine {
     ].map((v) => (v * 10).round() / 10).toList(),
     'text': text,
     'color': color,
+    if (todo) 'todo': true,
+    if (done) 'done': true,
   };
 
   factory TypedLine.fromJson(Map<String, dynamic> j) {
@@ -162,6 +199,8 @@ class TypedLine {
       ),
       text: j['text'] as String,
       color: j['color'] as int? ?? 0xFF1D1F22,
+      todo: j['todo'] as bool? ?? false,
+      done: j['done'] as bool? ?? false,
     );
   }
 }
@@ -180,15 +219,61 @@ double latinShareOf(String text) {
   return total == 0 ? 0 : latin / total;
 }
 
+/// A picture placed on the page. [file] is a name inside the app's image
+/// folder (see ImageStore); [box] is in page coordinates.
+class PageImage {
+  const PageImage({required this.file, required this.box});
+  final String file;
+  final Rect box;
+
+  PageImage copyWith({Rect? box}) =>
+      PageImage(file: file, box: box ?? this.box);
+
+  Map<String, dynamic> toJson() => {
+    'file': file,
+    'b': [
+      box.left,
+      box.top,
+      box.width,
+      box.height,
+    ].map((v) => (v * 10).round() / 10).toList(),
+  };
+
+  factory PageImage.fromJson(Map<String, dynamic> j) {
+    final b = (j['b'] as List).cast<num>();
+    return PageImage(
+      file: j['file'] as String,
+      box: Rect.fromLTWH(
+        b[0].toDouble(),
+        b[1].toDouble(),
+        b[2].toDouble(),
+        b[3].toDouble(),
+      ),
+    );
+  }
+}
+
+/// Everything drawn on a page at one moment, for undo and copy/paste.
+class PageContent {
+  const PageContent(this.strokes, this.typed, this.images);
+  final List<InkStroke> strokes;
+  final List<TypedLine> typed;
+  final List<PageImage> images;
+
+  bool get isEmpty => strokes.isEmpty && typed.isEmpty && images.isEmpty;
+}
+
 class NotePage {
   NotePage({
     required this.id,
     required this.template,
     List<InkStroke>? strokes,
     List<TypedLine>? typed,
+    List<PageImage>? images,
     this.text,
   }) : strokes = strokes ?? [],
-       typed = typed ?? [];
+       typed = typed ?? [],
+       images = images ?? [];
 
   final String id;
   PageTemplate template;
@@ -196,6 +281,16 @@ class NotePage {
 
   /// Typed text on the page. Replaced as a whole on every change.
   List<TypedLine> typed;
+
+  /// Pictures on the page, drawn under the ink.
+  List<PageImage> images;
+
+  PageContent get content => PageContent(strokes, typed, images);
+  set content(PageContent c) {
+    strokes = c.strokes;
+    typed = c.typed;
+    images = c.images;
+  }
 
   /// Last handwriting-to-text result for this page.
   String? text;
@@ -205,6 +300,7 @@ class NotePage {
     'template': template.name,
     'strokes': [for (final s in strokes) s.toJson()],
     if (typed.isNotEmpty) 'typed': [for (final t in typed) t.toJson()],
+    if (images.isNotEmpty) 'images': [for (final i in images) i.toJson()],
     if (text != null) 'text': text,
   };
 
@@ -218,6 +314,10 @@ class NotePage {
     typed: [
       for (final t in (j['typed'] as List? ?? []))
         TypedLine.fromJson(t as Map<String, dynamic>),
+    ],
+    images: [
+      for (final i in (j['images'] as List? ?? []))
+        PageImage.fromJson(i as Map<String, dynamic>),
     ],
     text: j['text'] as String?,
   );
@@ -331,3 +431,16 @@ class Notebook {
 String newId() =>
     DateTime.now().microsecondsSinceEpoch.toRadixString(36) +
     math.Random().nextInt(1 << 20).toRadixString(36);
+
+/// [r] moved by [d] and scaled by [k] around [origin].
+Rect transformRect(
+  Rect r,
+  Offset d, {
+  double k = 1,
+  Offset origin = Offset.zero,
+}) => Rect.fromLTWH(
+  origin.dx + (r.left - origin.dx) * k + d.dx,
+  origin.dy + (r.top - origin.dy) * k + d.dy,
+  r.width * k,
+  r.height * k,
+);
