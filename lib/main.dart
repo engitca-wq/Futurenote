@@ -8,7 +8,20 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
     as mlkit;
 
-void main() => runApp(const FutureNoteApp());
+void main() {
+  // Show any build error on screen instead of a blank page, so a tester can report it.
+  ErrorWidget.builder = (details) => Material(
+        color: const Color(0xFFFBEBEB),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Text('حدث خطأ، صوّر الشاشة وابعتها:\n\n${details.exceptionAsString()}',
+                textDirection: TextDirection.rtl, style: const TextStyle(color: Color(0xFF8A1C1C))),
+          ),
+        ),
+      );
+  runApp(const FutureNoteApp());
+}
 
 const _ink = Color(0xFF1D1F22);
 const _accent = Color(0xFF2F5D50);
