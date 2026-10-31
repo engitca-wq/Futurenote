@@ -12,8 +12,13 @@ enum PenMode { pen, highlighter, eraser, text, lasso, shape }
 enum ShapeKind {
   line('خط', Icons.horizontal_rule),
   arrow('سهم', Icons.arrow_right_alt),
-  rect('مستطيل', Icons.crop_square),
-  ellipse('دايرة', Icons.circle_outlined);
+  square('مربع', Icons.crop_square),
+  rect('مستطيل', Icons.rectangle_outlined),
+  circle('دايرة', Icons.circle_outlined),
+  ellipse('بيضاوي', Icons.egg_outlined),
+  triangle('مثلث', Icons.change_history),
+  diamond('معيّن', Icons.diamond_outlined),
+  star('نجمة', Icons.star_border);
 
   const ShapeKind(this.label, this.icon);
   final String label;
@@ -27,6 +32,29 @@ class PenSettings extends ChangeNotifier {
   double _width = 3.2;
   bool _penOnly = false;
   ShapeKind _shape = ShapeKind.rect;
+  LineStyle _lineStyle = LineStyle.solid;
+  double _textHeight = 50;
+  String _font = '';
+  bool _todo = false;
+
+  LineStyle get lineStyle => _lineStyle;
+  set lineStyle(LineStyle v) => _set(() => _lineStyle = v);
+
+  /// Typed text: line height in page units (the font follows it), font
+  /// family, and whether new lines are tasks.
+  double get textHeight => _textHeight;
+  set textHeight(double v) => _set(() => _textHeight = v);
+  String get font => _font;
+  set font(String v) => _set(() => _font = v);
+  bool get todo => _todo;
+  set todo(bool v) => _set(() => _todo = v);
+
+  static const textSizes = <(double, String)>[
+    (36, 'صغير'),
+    (50, 'عادي'),
+    (70, 'كبير'),
+    (96, 'عنوان'),
+  ];
 
   PenMode get mode => _mode;
   int get color => _color;
@@ -165,6 +193,43 @@ class Selection extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool get hasText => _typed.isNotEmpty;
+
+  /// Restyles the selected typed lines. [k] scales their size.
+  PageContent? styleText({int? color, String? font, double k = 1}) {
+    final p = page;
+    if (p == null || _typed.isEmpty) return null;
+    final before = p.content;
+    final nt = <TypedLine>[];
+    p.typed = [
+      for (final t in p.typed)
+        if (_typed.contains(t))
+          (nt..add(
+                t.copyWith(
+                  color: color,
+                  font: font,
+                  box: k == 1
+                      ? null
+                      : Rect.fromLTWH(
+                          t.box.left,
+                          t.box.top,
+                          t.box.width,
+                          (t.box.height * k).clamp(24.0, 200.0),
+                        ),
+                ),
+              ))
+              .last
+        else
+          t,
+    ];
+    _typed
+      ..clear()
+      ..addAll(nt);
+    _refreshBox();
+    notifyListeners();
+    return before;
+  }
+
   PageContent? delete() {
     final p = page;
     if (p == null) return null;
@@ -249,7 +314,45 @@ List<InkPoint> shapePoints(ShapeKind kind, Offset a, Offset b, int t) {
     ];
   }
 
+  List<InkPoint> polygon(List<Offset> corners) => [
+    for (var i = 0; i < corners.length; i++)
+      ...segment(corners[i], corners[(i + 1) % corners.length]),
+  ];
+  // Square and circle keep equal sides, following the drag's larger side.
+  Offset even(Offset a, Offset b) {
+    final d = b - a;
+    final side = math.max(d.dx.abs(), d.dy.abs());
+    return a +
+        Offset(d.dx.isNegative ? -side : side, d.dy.isNegative ? -side : side);
+  }
+
   switch (kind) {
+    case ShapeKind.square:
+      return shapePoints(ShapeKind.rect, a, even(a, b), t);
+    case ShapeKind.circle:
+      return shapePoints(ShapeKind.ellipse, a, even(a, b), t);
+    case ShapeKind.triangle:
+      final r = Rect.fromPoints(a, b);
+      return polygon([r.topCenter, r.bottomRight, r.bottomLeft]);
+    case ShapeKind.diamond:
+      final r = Rect.fromPoints(a, b);
+      return polygon([
+        r.topCenter,
+        r.centerRight,
+        r.bottomCenter,
+        r.centerLeft,
+      ]);
+    case ShapeKind.star:
+      final r = Rect.fromPoints(a, b);
+      return polygon([
+        for (var i = 0; i < 10; i++)
+          Offset(
+            r.center.dx +
+                r.width / 2 * (i.isEven ? 1 : 0.4) * math.sin(math.pi * i / 5),
+            r.center.dy -
+                r.height / 2 * (i.isEven ? 1 : 0.4) * math.cos(math.pi * i / 5),
+          ),
+      ]);
     case ShapeKind.line:
       return segment(a, b);
     case ShapeKind.arrow:
@@ -299,6 +402,7 @@ class InkPageView extends StatefulWidget {
     required this.onChanged,
     this.onStrokeTap,
     this.onTextTap,
+    this.onTextCommit,
     this.litRange,
   });
 
@@ -313,7 +417,13 @@ class InkPageView extends StatefulWidget {
   final void Function(InkStroke stroke)? onStrokeTap;
 
   /// Text mode: a tap reports the page point and the typed line under it.
-  final void Function(Offset at, TypedLine? hit)? onTextTap;
+  /// Return true when the tap was handled (a task box ticked), so no
+  /// typing starts.
+  final bool Function(Offset at, TypedLine? hit)? onTextTap;
+
+  /// Text mode: typing finished. [hit] is the line that was edited, if any.
+  final void Function(NotePage page, TypedLine? hit, Rect box, String text)?
+  onTextCommit;
 
   /// Strokes written inside this time range (epoch ms) are drawn in the
   /// accent colour, to show what was written up to the playing moment.
@@ -338,11 +448,81 @@ class _InkPageViewState extends State<InkPageView> {
 
   Selection get sel => widget.selection;
 
+  // Typing straight on the page.
+  final _editCtl = TextEditingController();
+  final _editFocus = FocusNode();
+  ({TypedLine? hit, Rect box})? _edit;
+
+  @override
+  void initState() {
+    super.initState();
+    _editFocus.addListener(() {
+      if (!_editFocus.hasFocus) _commitEdit();
+    });
+  }
+
   @override
   void dispose() {
+    _commitEdit(disposing: true);
     _live.dispose();
     _lassoPath.dispose();
+    _editCtl.dispose();
+    _editFocus.dispose();
     super.dispose();
+  }
+
+  void _commitEdit({bool disposing = false}) {
+    final e = _edit;
+    if (e == null) return;
+    _edit = null;
+    final text = _editCtl.text;
+    if (text.trim().isEmpty && e.hit == null) {
+      if (!disposing) setState(() {});
+      return;
+    }
+    final cb = widget.onTextCommit;
+    final page = widget.page;
+    if (disposing) {
+      // The tree is locked while a page closes; hand the text over after.
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => cb?.call(page, e.hit, e.box, text),
+      );
+    } else {
+      setState(() {});
+      cb?.call(page, e.hit, e.box, text);
+    }
+  }
+
+  /// The area the open text field covers, growing with its lines.
+  Rect? get _editArea {
+    final e = _edit;
+    if (e == null) return null;
+    final lines = '\n'.allMatches(_editCtl.text).length + 2;
+    return Rect.fromLTWH(
+      e.box.left,
+      e.box.top,
+      e.box.width,
+      e.box.height * lines,
+    ).inflate(8);
+  }
+
+  void _startEdit(Offset at, TypedLine? hit) {
+    final h = hit?.box.height ?? widget.pen.textHeight;
+    Rect box;
+    if (hit != null) {
+      box = hit.box;
+    } else {
+      // Sit on the ruled line under the tap.
+      var bottom = 110.0;
+      while (bottom < at.dy && bottom < kPageHeight - 40) {
+        bottom += 56;
+      }
+      box = Rect.fromLTWH(60, bottom - h, kPageWidth - 120, h);
+    }
+    _editCtl.text = hit?.text ?? '';
+    _editCtl.selection = TextSelection.collapsed(offset: _editCtl.text.length);
+    setState(() => _edit = (hit: hit, box: box));
+    _editFocus.requestFocus();
   }
 
   bool _accepts(PointerEvent e) {
@@ -386,12 +566,17 @@ class _InkPageViewState extends State<InkPageView> {
     final mode = widget.pen.mode;
     final inverted = e.kind == PointerDeviceKind.invertedStylus;
     if (mode == PenMode.text && !inverted) {
+      final area = _editArea;
+      if (area != null && area.contains(at)) return; // inside the open field
+      _commitEdit();
       final hit = widget.page.typed.reversed
           .where((t) => t.box.inflate(6).contains(at))
           .firstOrNull;
-      widget.onTextTap?.call(at, hit);
+      if (widget.onTextTap?.call(at, hit) ?? false) return;
+      _startEdit(at, hit);
       return;
     }
+    if (_edit != null) _editFocus.unfocus();
     _pointer = e.pointer;
     _before = widget.page.content;
     _last = at;
@@ -515,6 +700,41 @@ class _InkPageViewState extends State<InkPageView> {
     }
   }
 
+  Widget _editField() {
+    final e = _edit!;
+    final pen = widget.pen;
+    final h = pen.textHeight; // follows the size picked while typing
+    final rtl = latinShareOf(_editCtl.text) <= 0.5;
+    return Positioned(
+      left: e.box.left * _scale,
+      top: (e.box.bottom - h) * _scale,
+      width: e.box.width * _scale,
+      child: Material(
+        color: const Color(0x14000000),
+        borderRadius: BorderRadius.circular(4),
+        child: TextField(
+          controller: _editCtl,
+          focusNode: _editFocus,
+          maxLines: null,
+          textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+          textAlign: rtl ? TextAlign.right : TextAlign.left,
+          onChanged: (_) => setState(() {}),
+          style: TextStyle(
+            fontSize: h * 0.62 * _scale,
+            height: 56 / (h * 0.62) * (h / 50).clamp(1.0, 3.0),
+            color: Color(pen.color),
+            fontFamily: pen.font.isEmpty ? null : pen.font,
+          ),
+          decoration: const InputDecoration(
+            isCollapsed: true,
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
@@ -545,6 +765,7 @@ class _InkPageViewState extends State<InkPageView> {
                     ),
                   ),
                 ),
+                if (_edit != null) _editField(),
                 RepaintBoundary(
                   child: ListenableBuilder(
                     listenable: Listenable.merge([_live, _lassoPath, sel]),
@@ -740,6 +961,7 @@ void paintTyped(Canvas canvas, TypedLine t, double scale) {
         fontSize: (t.box.height * 0.62) * scale,
         height: 1.2,
         decoration: t.done ? TextDecoration.lineThrough : null,
+        fontFamily: t.font.isEmpty ? null : t.font,
       ),
     ),
     textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
@@ -827,6 +1049,22 @@ void paintStroke(
       ..strokeWidth = s.width * scale
       ..blendMode = BlendMode.multiply;
     canvas.drawPath(_smooth(pts, scale, 0, pts.length), paint);
+    return;
+  }
+  if (s.dash != LineStyle.solid) {
+    paint.strokeWidth = s.width * scale;
+    final path = Path()..moveTo(pts.first.x * scale, pts.first.y * scale);
+    for (final q in pts.skip(1)) {
+      path.lineTo(q.x * scale, q.y * scale);
+    }
+    final on = (s.dash == LineStyle.dashed ? 14.0 : 0.1) * scale + 0.5;
+    final off =
+        (s.dash == LineStyle.dashed ? 9.0 : 7.0) * scale + s.width * scale;
+    for (final m in path.computeMetrics()) {
+      for (var d = 0.0; d < m.length; d += on + off) {
+        canvas.drawPath(m.extractPath(d, math.min(d + on, m.length)), paint);
+      }
+    }
     return;
   }
   // Vary the width with pressure by drawing short smoothed segments.

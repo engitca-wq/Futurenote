@@ -8,6 +8,25 @@ const double kPageHeight = 1414;
 
 enum InkTool { pen, highlighter }
 
+enum LineStyle {
+  solid('متصل'),
+  dashed('متقطع'),
+  dotted('نقط');
+
+  const LineStyle(this.label);
+  final String label;
+}
+
+/// Fonts bundled for typed text; the first is the phone's own font.
+const textFonts = <(String, String)>[
+  ('', 'خط الموبايل'),
+  ('Cairo', 'القاهرة'),
+  ('Tajawal', 'تجوّل'),
+  ('Amiri', 'أميري (نسخ)'),
+  ('ReemKufi', 'ريم كوفي'),
+  ('ArefRuqaa', 'رقعة'),
+];
+
 enum PageTemplate {
   lined('مسطّر'),
   grid('مربعات'),
@@ -40,11 +59,13 @@ class InkStroke {
     required this.color,
     required this.width,
     List<InkPoint>? points,
+    this.dash = LineStyle.solid,
   }) : points = points ?? [];
 
   final InkTool tool;
   final int color;
   final double width;
+  final LineStyle dash;
   final List<InkPoint> points;
 
   Rect? _bounds;
@@ -112,6 +133,7 @@ class InkStroke {
     'tool': tool.name,
     'color': color,
     'width': width,
+    if (dash != LineStyle.solid) 'dash': dash.name,
     // Flat list keeps files small: x, y, t, pressure for each point.
     'p': [
       for (final p in points) ...[
@@ -132,6 +154,10 @@ class InkStroke {
       ),
       color: j['color'] as int,
       width: (j['width'] as num).toDouble(),
+      dash: LineStyle.values.firstWhere(
+        (d) => d.name == j['dash'],
+        orElse: () => LineStyle.solid,
+      ),
       points: [
         for (var i = 0; i + 3 < flat.length; i += 4)
           InkPoint(
@@ -154,24 +180,35 @@ class TypedLine {
     this.color = 0xFF1D1F22,
     this.todo = false,
     this.done = false,
+    this.font = '',
   });
 
   final Rect box;
   final String text;
   final int color;
 
+  /// Font family name ('' is the system font). Size follows the box height.
+  final String font;
+
   /// Shown with a check box in front; [done] ticks it and strikes the text.
   final bool todo;
   final bool done;
 
-  TypedLine copyWith({Rect? box, String? text, bool? todo, bool? done}) =>
-      TypedLine(
-        box: box ?? this.box,
-        text: text ?? this.text,
-        color: color,
-        todo: todo ?? this.todo,
-        done: done ?? this.done,
-      );
+  TypedLine copyWith({
+    Rect? box,
+    String? text,
+    bool? todo,
+    bool? done,
+    int? color,
+    String? font,
+  }) => TypedLine(
+    box: box ?? this.box,
+    text: text ?? this.text,
+    color: color ?? this.color,
+    todo: todo ?? this.todo,
+    done: done ?? this.done,
+    font: font ?? this.font,
+  );
 
   bool get rtl => latinShareOf(text) <= 0.5;
 
@@ -186,6 +223,7 @@ class TypedLine {
     'color': color,
     if (todo) 'todo': true,
     if (done) 'done': true,
+    if (font.isNotEmpty) 'font': font,
   };
 
   factory TypedLine.fromJson(Map<String, dynamic> j) {
@@ -201,6 +239,7 @@ class TypedLine {
       color: j['color'] as int? ?? 0xFF1D1F22,
       todo: j['todo'] as bool? ?? false,
       done: j['done'] as bool? ?? false,
+      font: j['font'] as String? ?? '',
     );
   }
 }

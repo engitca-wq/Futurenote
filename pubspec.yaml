@@ -68,6 +68,24 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Arabic fonts for typed text (SIL Open Font License, see assets/fonts).
+  fonts:
+    - family: Cairo
+      fonts:
+        - asset: assets/fonts/Cairo.ttf
+    - family: Amiri
+      fonts:
+        - asset: assets/fonts/Amiri.ttf
+    - family: Tajawal
+      fonts:
+        - asset: assets/fonts/Tajawal.ttf
+    - family: ReemKufi
+      fonts:
+        - asset: assets/fonts/ReemKufi.ttf
+    - family: ArefRuqaa
+      fonts:
+        - asset: assets/fonts/ArefRuqaa.ttf
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

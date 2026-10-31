@@ -285,11 +285,12 @@ class _NotebookScreenState extends State<NotebookScreen> {
     );
   }
 
-  /// Text tool: type (or paste) text where the page was tapped, or edit the
-  /// typed line that was tapped.
-  Future<void> _typeAt(Offset at, TypedLine? hit) async {
-    if (hit != null && hit.todo) {
-      // A tap on the check box ticks the task instead of editing it.
+  /// Text tool, before the page opens a field: a tap on a task's box ticks
+  /// it (returns true). A tap on a typed line loads its style into the pen,
+  /// so the field opens looking like the line.
+  bool _onTextTap(Offset at, TypedLine? hit) {
+    if (hit == null) return false;
+    if (hit.todo) {
       final side = hit.box.height * 0.5 + 12;
       final onBox = hit.rtl
           ? at.dx > hit.box.right - side
@@ -302,89 +303,59 @@ class _NotebookScreenState extends State<NotebookScreen> {
               identical(t, hit) ? t.copyWith(done: !t.done) : t,
           ];
         });
-        return;
+        widget.store.changed(book);
+        return true;
       }
     }
-    final controller = TextEditingController(text: hit?.text ?? '');
-    var todo = hit?.todo ?? false;
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(hit == null ? 'اكتب نص' : 'تعديل النص'),
-        content: StatefulBuilder(
-          builder: (context, setLocal) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: controller,
-                autofocus: true,
-                minLines: 2,
-                maxLines: 8,
-                decoration: const InputDecoration(
-                  hintText: 'اكتب أو الصق النص هنا',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: todo,
-                onChanged: (v) => setLocal(() => todo = v ?? false),
-                title: const Text('مربع مهمة'),
-                subtitle: const Text('كل سطر يبقى مهمة تتعلّم عليها'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          if (hit != null)
-            TextButton(
-              onPressed: () => Navigator.pop(context, ''),
-              child: const Text('حذف'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('تم'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (result == null || !mounted) return;
-    final lines = [for (final l in result.split('\n')) ...wrapLine(l)];
+    pen.font = hit.font;
+    pen.textHeight = hit.box.height;
+    pen.todo = hit.todo;
+    pen.color = hit.color;
+    pen.mode = PenMode.text;
+    return false;
+  }
+
+  /// The page's text field closed: place what was typed as ruled lines from
+  /// where the field sat, replacing the edited line (empty text deletes it).
+  void _onTextCommit(NotePage target, TypedLine? hit, Rect box, String text) {
+    final h = pen.textHeight;
+    final wrap = (48 * 50 / h).round().clamp(10, 80);
+    final lines = [for (final l in text.split('\n')) ...wrapLine(l, max: wrap)];
     if (hit == null && lines.isEmpty) return;
-    const rule = 56.0, firstRule = 110.0, h = 50.0;
-    // Snap to the ruled row that holds the tap (or the edited line's row).
-    var y = hit != null ? hit.box.bottom : firstRule;
-    if (hit == null) {
-      while (y < at.dy && y < kPageHeight - 40) {
-        y += rule;
-      }
+    if (hit != null &&
+        lines.length == 1 &&
+        lines.first == hit.text &&
+        hit.font == pen.font &&
+        hit.color == pen.color &&
+        hit.todo == pen.todo &&
+        hit.box.height == h) {
+      return; // nothing changed
     }
+    final step = h + 6 < 56 ? 56.0 : h + 6;
+    final bottom = box.bottom;
     final placed = [
       for (var i = 0; i < lines.length; i++)
-        if (y + i * rule <= kPageHeight - 20)
+        if (bottom + i * step <= kPageHeight - 10)
           TypedLine(
-            box: Rect.fromLTWH(60, y + i * rule - h, kPageWidth - 120, h),
+            box: Rect.fromLTWH(box.left, bottom + i * step - h, box.width, h),
             text: lines[i],
             color: pen.color,
-            todo: todo,
-            done: todo && (hit?.done ?? false) && lines.length == 1,
+            font: pen.font,
+            todo: pen.todo,
+            done: pen.todo && (hit?.done ?? false) && lines.length == 1,
           ),
     ];
-    (_undo[page.id] ??= []).add(_now);
-    _redo[page.id]?.clear();
-    setState(() {
-      page.typed = [
-        for (final t in page.typed)
-          if (!identical(t, hit)) t,
-        ...placed,
-      ];
-    });
+    final undo = _undo[target.id] ??= [];
+    undo.add(target.content);
+    if (undo.length > 100) undo.removeAt(0);
+    _redo[target.id]?.clear();
+    target.typed = [
+      for (final t in target.typed)
+        if (!identical(t, hit)) t,
+      ...placed,
+    ];
     widget.store.changed(book);
+    if (mounted) setState(() {});
   }
 
   Future<void> _addImage(ImageSource source) async {
@@ -680,6 +651,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
               recording: recorder.recording,
               onRecord: _record,
             ),
+            if (!_listenMode) _ModeBar(pen: pen),
             ListenableBuilder(
               listenable: Listenable.merge([selection, pen]),
               builder: (_, _) => _SelectionBar(
@@ -722,7 +694,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
                               selection: selection,
                               onChanged: _changed,
                               onStrokeTap: _listenMode ? _onStrokeTap : null,
-                              onTextTap: _typeAt,
+                              onTextTap: _onTextTap,
+                              onTextCommit: _onTextCommit,
                               litRange: now == null
                                   ? null
                                   : (
@@ -843,6 +816,51 @@ class _SelectionBar extends StatelessWidget {
                 'حذف',
                 () => onEdit(selection.delete()),
               ),
+              if (selection.hasText) ...[
+                const _Divider(),
+                IconButton(
+                  tooltip: 'تصغير الخط',
+                  icon: const Icon(Icons.text_decrease),
+                  onPressed: () => onEdit(selection.styleText(k: 0.8)),
+                ),
+                IconButton(
+                  tooltip: 'تكبير الخط',
+                  icon: const Icon(Icons.text_increase),
+                  onPressed: () => onEdit(selection.styleText(k: 1.25)),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: 'نوع الخط',
+                  icon: const Icon(Icons.font_download_outlined),
+                  onSelected: (f) => onEdit(selection.styleText(font: f)),
+                  itemBuilder: (_) => [
+                    for (final (f, label) in textFonts)
+                      PopupMenuItem(
+                        value: f,
+                        child: Text(
+                          label,
+                          style: TextStyle(
+                            fontFamily: f.isEmpty ? null : f,
+                            fontSize: 18,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                for (final c in PenSettings.inkColors)
+                  GestureDetector(
+                    onTap: () => onEdit(selection.styleText(color: c)),
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        color: Color(c),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                const _Divider(),
+              ],
             ],
             if (Selection.clipboard != null)
               action(Icons.content_paste, 'لصق', onPaste),
@@ -851,6 +869,90 @@ class _SelectionBar extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Options for the tool in hand: font, size and task boxes while typing,
+/// line style while drawing shapes.
+class _ModeBar extends StatelessWidget {
+  const _ModeBar({required this.pen});
+  final PenSettings pen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListenableBuilder(
+      listenable: pen,
+      builder: (context, _) {
+        final List<Widget> items;
+        if (pen.mode == PenMode.text) {
+          items = [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text('دوس على الصفحة واكتب'),
+            ),
+            const _Divider(),
+            for (final (f, label) in textFonts)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: ChoiceChip(
+                  label: Text(
+                    label,
+                    style: TextStyle(fontFamily: f.isEmpty ? null : f),
+                  ),
+                  selected: pen.font == f,
+                  onSelected: (_) => pen.font = f,
+                ),
+              ),
+            const _Divider(),
+            for (final (h, label) in PenSettings.textSizes)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: ChoiceChip(
+                  label: Text(label),
+                  selected: pen.textHeight == h,
+                  onSelected: (_) => pen.textHeight = h,
+                ),
+              ),
+            const _Divider(),
+            FilterChip(
+              avatar: const Icon(Icons.check_box_outlined, size: 18),
+              label: const Text('مهام'),
+              selected: pen.todo,
+              onSelected: (v) => pen.todo = v,
+            ),
+          ];
+        } else if (pen.mode == PenMode.shape) {
+          items = [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text('${pen.shape.label}: اسحب على الصفحة'),
+            ),
+            const _Divider(),
+            for (final l in LineStyle.values)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: ChoiceChip(
+                  label: Text(l.label),
+                  selected: pen.lineStyle == l,
+                  onSelected: (_) => pen.lineStyle = l,
+                ),
+              ),
+          ];
+        } else {
+          return const SizedBox.shrink();
+        }
+        return Container(
+          width: double.infinity,
+          color: theme.colorScheme.surfaceContainerLow,
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(children: items),
+          ),
+        );
+      },
     );
   }
 }

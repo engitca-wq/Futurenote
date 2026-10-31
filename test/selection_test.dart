@@ -66,6 +66,26 @@ void main() {
     },
   );
 
+  test('selected text changes size, font and colour, with undo', () {
+    final page = NotePage(
+      id: 'p',
+      template: PageTemplate.blank,
+      typed: [
+        const TypedLine(box: Rect.fromLTWH(60, 100, 800, 50), text: 'نص'),
+      ],
+    );
+    final sel = Selection();
+    expect(sel.select(page, square(50, 90, 900, 160)), isTrue);
+    expect(sel.hasText, isTrue);
+    final before = sel.styleText(k: 1.25)!;
+    sel.styleText(font: 'Amiri', color: 0xFFB3261E);
+    final t = page.typed.single;
+    expect(t.box.height, closeTo(62.5, 0.01));
+    expect(t.font, 'Amiri');
+    expect(t.color, 0xFFB3261E);
+    expect(before.typed.single.box.height, 50);
+  });
+
   test('an empty lasso selects nothing', () {
     final page = NotePage(
       id: 'p',

@@ -22,5 +22,33 @@ void main() {
     await tester.tap(find.widgetWithText(OutlinedButton, 'صفحة'));
     await tester.pumpAndSettle();
     expect(find.text('صفحة 2 من 2'), findsOneWidget);
+
+    // Keyboard tool: tap the page and type straight on it.
+    await tester.tap(find.byTooltip('كتابة بالكيبورد'));
+    await tester.pumpAndSettle();
+    expect(find.text('دوس على الصفحة واكتب'), findsOneWidget);
+    final page = find.byType(AspectRatio).last;
+    await tester.tapAt(
+      tester.getRect(page).topLeft +
+          tester.getSize(page).bottomRight(Offset.zero).scale(0.3, 0.2),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'مرحبا');
+    // Tapping elsewhere on the page places the text and opens a new field.
+    await tester.tapAt(
+      tester.getRect(page).topLeft +
+          tester.getSize(page).bottomRight(Offset.zero).scale(0.3, 0.7),
+    );
+    await tester.pumpAndSettle();
+    final book = store.notebooks.first;
+    expect(book.pages.last.typed.map((t) => t.text), ['مرحبا']);
+
+    // Shapes offer line styles.
+    await tester.tap(find.byTooltip('أشكال'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('نجمة').last);
+    await tester.pumpAndSettle();
+    expect(find.text('متقطع'), findsOneWidget);
   });
 }
