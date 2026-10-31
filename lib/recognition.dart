@@ -86,6 +86,33 @@ class HandwritingReader {
     return arTexts.take(max).toList();
   }
 
+  /// Reads every written line of a page, top to bottom. Each entry holds the
+  /// readings of one line, best first. Highlighter strokes are skipped.
+  Future<List<List<String>>> readPage(NotePage page) async {
+    final ink = page.strokes
+        .where((s) => s.tool == InkTool.pen && s.points.isNotEmpty)
+        .toList();
+    final out = <List<String>>[];
+    var before = '';
+    for (final g in groupIntoLines<InkStroke>(ink, (s) => s.bounds)) {
+      final strokes = [
+        for (final s in g)
+          [for (final p in s.points) mlkit.StrokePoint(x: p.x, y: p.y, t: p.t)],
+      ];
+      final box = g.map((s) => s.bounds).reduce((a, b) => a.expandToInclude(b));
+      final readings = await readLine(
+        strokes,
+        area: Size(kPageWidth, box.height.clamp(40, kPageHeight)),
+        preContext: before,
+      );
+      if (readings.isEmpty) continue;
+      out.add(readings);
+      before = readings.first;
+      if (before.length > 20) before = before.substring(before.length - 20);
+    }
+    return out;
+  }
+
   static List<String> _clean(List<mlkit.RecognitionCandidate> c) =>
       [for (final x in c) x.text.trim()].where((t) => t.isNotEmpty).toList();
 }

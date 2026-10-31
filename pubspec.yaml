@@ -41,6 +41,7 @@ dependencies:
   record: ^7.1.2
   audioplayers: ^6.8.1
   speech_to_text: ^7.5.0
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

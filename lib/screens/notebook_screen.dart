@@ -3,14 +3,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
-    as mlkit;
 
+import '../ai.dart';
 import '../ink_canvas.dart';
 import '../models.dart';
 import '../recognition.dart';
 import '../recorder.dart';
 import '../store.dart';
+import 'assistant.dart';
 
 /// One open notebook: write on pages, convert them to text, and record.
 class NotebookScreen extends StatefulWidget {
@@ -19,11 +19,13 @@ class NotebookScreen extends StatefulWidget {
     required this.store,
     required this.book,
     required this.recorder,
+    required this.ai,
   });
 
   final NotebookStore store;
   final Notebook book;
   final NoteRecorder recorder;
+  final AiService ai;
 
   @override
   State<NotebookScreen> createState() => _NotebookScreenState();
@@ -273,6 +275,28 @@ class _NotebookScreenState extends State<NotebookScreen> {
     );
   }
 
+  void _assistant() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheet) => AssistantSheet(
+        ai: widget.ai,
+        book: book,
+        page: page,
+        onInsert: _insertText,
+        onOpenSettings: () {
+          Navigator.pop(sheet);
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => AssistantSettingsScreen(ai: widget.ai),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   // ---- Handwriting to text ----
 
   void _convert() {
@@ -286,7 +310,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
 
   /// Puts typed lines under the handwriting, on the ruled lines, keeping the
   /// ink as it is. Continues on a new page when there is no room left.
-  void _insertText(List<String> lines) {
+  void _insertText(List<String> raw) {
+    final lines = [for (final l in raw) ...wrapLine(l)];
     if (lines.isEmpty) return;
     const rule = 56.0, firstRule = 110.0, h = 50.0;
     var target = page;
@@ -372,6 +397,11 @@ class _NotebookScreenState extends State<NotebookScreen> {
             tooltip: 'إعادة',
             icon: const Icon(Icons.redo),
             onPressed: _canRedo ? _redoStep : null,
+          ),
+          IconButton(
+            tooltip: 'المساعد الذكي',
+            icon: const Icon(Icons.auto_awesome),
+            onPressed: _assistant,
           ),
           IconButton(
             tooltip: 'تحويل لنص',
@@ -495,6 +525,25 @@ class _NotebookScreenState extends State<NotebookScreen> {
       ),
     );
   }
+}
+
+/// Splits a long line at spaces so each piece fits one ruled line.
+List<String> wrapLine(String line, {int max = 48}) {
+  final out = <String>[];
+  var current = '';
+  for (final word in line.split(RegExp(r'\s+'))) {
+    if (word.isEmpty) continue;
+    if (current.isEmpty) {
+      current = word;
+    } else if (current.length + 1 + word.length <= max) {
+      current = '$current $word';
+    } else {
+      out.add(current);
+      current = word;
+    }
+  }
+  if (current.isNotEmpty) out.add(current);
+  return out;
 }
 
 typedef _Snapshot = ({List<InkStroke> strokes, List<TypedLine> typed});
@@ -802,28 +851,7 @@ class _TextSheetState extends State<_TextSheet> {
       );
       return;
     }
-    final ink = widget.page.strokes
-        .where((s) => s.tool == InkTool.pen && s.points.isNotEmpty)
-        .toList();
-    final groups = groupIntoLines<InkStroke>(ink, (s) => s.bounds);
-    final out = <List<String>>[];
-    var before = '';
-    for (final g in groups) {
-      final strokes = [
-        for (final s in g)
-          [for (final p in s.points) mlkit.StrokePoint(x: p.x, y: p.y, t: p.t)],
-      ];
-      final box = g.map((s) => s.bounds).reduce((a, b) => a.expandToInclude(b));
-      final readings = await reader.readLine(
-        strokes,
-        area: Size(kPageWidth, box.height.clamp(40, kPageHeight)),
-        preContext: before,
-      );
-      if (readings.isEmpty) continue;
-      out.add(readings);
-      before = readings.first;
-      if (before.length > 20) before = before.substring(before.length - 20);
-    }
+    final out = await reader.readPage(widget.page);
     if (!mounted) return;
     setState(() {
       _lines = out;

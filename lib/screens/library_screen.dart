@@ -1,18 +1,26 @@
 import 'package:flutter/material.dart';
 
+import '../ai.dart';
 import '../ink_canvas.dart';
 import '../models.dart';
 import '../recognition.dart';
 import '../recorder.dart';
 import '../store.dart';
+import 'assistant.dart';
 import 'notebook_screen.dart';
 
 /// Home screen: every notebook as a cover, newest first.
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.store, required this.recorder});
+  const LibraryScreen({
+    super.key,
+    required this.store,
+    required this.recorder,
+    required this.ai,
+  });
 
   final NotebookStore store;
   final NoteRecorder recorder;
+  final AiService ai;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -39,8 +47,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void _open(Notebook book) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            NotebookScreen(store: store, book: book, recorder: widget.recorder),
+        builder: (_) => NotebookScreen(
+          store: store,
+          book: book,
+          recorder: widget.recorder,
+          ai: widget.ai,
+        ),
       ),
     );
   }
@@ -148,6 +160,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 1),
               ),
         actions: [
+          IconButton(
+            tooltip: 'إعدادات المساعد الذكي',
+            icon: const Icon(Icons.auto_awesome_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => AssistantSettingsScreen(ai: widget.ai),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: _searching ? 'إغلاق البحث' : 'بحث',
             icon: Icon(_searching ? Icons.close : Icons.search),

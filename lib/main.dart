@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'ai.dart';
 import 'recognition.dart';
 import 'recorder.dart';
 import 'screens/library_screen.dart';
@@ -46,6 +47,7 @@ class FutureNoteApp extends StatefulWidget {
 class _FutureNoteAppState extends State<FutureNoteApp>
     with WidgetsBindingObserver {
   late final recorder = NoteRecorder(widget.store);
+  final ai = AiService();
   late final Future<void> _loading = widget.store.loaded
       ? Future.value()
       : widget.store.load();
@@ -54,7 +56,10 @@ class _FutureNoteAppState extends State<FutureNoteApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (widget.prepareReader) HandwritingReader.instance.prepare();
+    if (widget.prepareReader) {
+      HandwritingReader.instance.prepare();
+      ai.load();
+    }
   }
 
   @override
@@ -102,7 +107,7 @@ class _FutureNoteAppState extends State<FutureNoteApp>
               body: Center(child: CircularProgressIndicator()),
             );
           }
-          return LibraryScreen(store: widget.store, recorder: recorder);
+          return LibraryScreen(store: widget.store, recorder: recorder, ai: ai);
         },
       ),
     );
