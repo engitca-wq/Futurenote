@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,7 +25,17 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build apk --release
+      - run: cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/futurenote.apk
       - uses: actions/upload-artifact@v4
         with:
           name: futurenote-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Publish test build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-build
+          name: FUTURENOTE test build
+          prerelease: true
+          make_latest: false
+          body: Latest test APK built from ${{ github.ref_name }} (${{ github.sha }}).
+          files: build/app/outputs/flutter-apk/futurenote.apk
