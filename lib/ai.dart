@@ -58,19 +58,52 @@ class AiError implements Exception {
   String toString() => message;
 }
 
-/// Sends notes to Claude, either through the app's server function (the
-/// release setup, where the key stays on the server) or straight to the API
-/// with a key saved on this device (for testing before the server exists).
+/// A ready-made provider setting. All of them speak the common
+/// "chat completions" protocol, so any open model host works.
+class AiPreset {
+  const AiPreset(this.name, this.baseUrl, this.modelHint, this.note);
+  final String name;
+  final String baseUrl;
+  final String modelHint;
+  final String note;
+}
+
+const aiPresets = [
+  AiPreset(
+    'OpenRouter',
+    'https://openrouter.ai/api/v1',
+    'qwen/qwen-2.5-72b-instruct',
+    'مفتاح واحد لعشرات النماذج المفتوحة (Qwen وLlama وغيرهم)، والدفع على قد الاستخدام.',
+  ),
+  AiPreset(
+    'Groq',
+    'https://api.groq.com/openai/v1',
+    'llama-3.3-70b-versatile',
+    'سريع جدًا، وفيه استخدام مجاني محدود.',
+  ),
+  AiPreset(
+    'Ollama (سيرفرك)',
+    'http://192.168.1.10:11434/v1',
+    'qwen2.5:7b',
+    'تشغّل النموذج على جهازك أو سيرفرك، من غير أي تكلفة على كل طلب.',
+  ),
+];
+
+/// Sends notes to an open-source model, either through the app's server
+/// function (the release setup, where the key stays on the server) or
+/// straight to a provider with a key saved on this device (for testing).
 class AiService extends ChangeNotifier {
   AiService({http.Client? client}) : _http = client ?? http.Client();
 
-  static const model = 'claude-opus-5-5';
   final http.Client _http;
   String serverUrl = '';
+  String baseUrl = '';
   String apiKey = '';
+  String model = '';
   bool loaded = false;
 
-  bool get configured => serverUrl.isNotEmpty || apiKey.isNotEmpty;
+  bool get configured =>
+      serverUrl.isNotEmpty || (baseUrl.isNotEmpty && model.isNotEmpty);
 
   Future<File> _file() async =>
       File('${(await getApplicationDocumentsDirectory()).path}/ai.json');
@@ -81,7 +114,9 @@ class AiService extends ChangeNotifier {
       if (await f.exists()) {
         final j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
         serverUrl = j['server'] as String? ?? '';
+        baseUrl = j['base'] as String? ?? '';
         apiKey = j['key'] as String? ?? '';
+        model = j['model'] as String? ?? '';
       }
     } catch (e) {
       debugPrint('AI settings unreadable: $e');
@@ -90,11 +125,25 @@ class AiService extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> save({required String server, required String key}) async {
+  Future<void> save({
+    required String server,
+    required String base,
+    required String key,
+    required String model,
+  }) async {
     serverUrl = server.trim();
+    baseUrl = base.trim().replaceAll(RegExp(r'/+$'), '');
     apiKey = key.trim();
+    this.model = model.trim();
     final f = await _file();
-    await f.writeAsString(jsonEncode({'server': serverUrl, 'key': apiKey}));
+    await f.writeAsString(
+      jsonEncode({
+        'server': serverUrl,
+        'base': baseUrl,
+        'key': apiKey,
+        'model': this.model,
+      }),
+    );
     notifyListeners();
   }
 
@@ -104,7 +153,9 @@ class AiService extends ChangeNotifier {
       throw AiError('مفيش نص في الملاحظات لسه. اكتب أو سجّل الأول.');
     }
     if (serverUrl.isNotEmpty) return _viaServer(task, notes, question);
-    if (apiKey.isNotEmpty) return _direct(task, notes, question);
+    if (baseUrl.isNotEmpty && model.isNotEmpty) {
+      return _direct(task, notes, question);
+    }
     throw AiError(
       'المساعد محتاج إعداد الأول. افتح الإعدادات من الشاشة الرئيسية.',
     );
@@ -128,30 +179,26 @@ class AiService extends ChangeNotifier {
     return (body['text'] as String? ?? '').trim();
   }
 
-  /// Raw HTTP to the Messages API: Dart has no official Anthropic SDK.
   Future<String> _direct(AiTask task, String notes, String? q) async {
     final res = await _send(
       () => _http.post(
-        Uri.parse('https://api.anthropic.com/v1/messages'),
+        Uri.parse('$baseUrl/chat/completions'),
         headers: {
           'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2026-10-21',
-          'anthropic-beta': 'server-side-fallback-2026-07-01',
+          if (apiKey.isNotEmpty) 'authorization': 'Bearer $apiKey',
         },
-        body: jsonEncode(buildRequest(task, notes, q)),
+        body: jsonEncode(buildRequest(model, task, notes, q)),
       ),
     );
     final body = _json(res);
     if (res.statusCode != 200) {
-      final err = body['error'];
-      final type = err is Map ? err['type'] : null;
       throw AiError(switch (res.statusCode) {
-        401 => 'مفتاح الخدمة غلط. راجعه في الإعدادات.',
-        402 || 403 => 'الحساب مفيهوش رصيد أو صلاحية للخدمة.',
+        401 || 403 => 'المفتاح غلط أو مالوش صلاحية. راجعه في الإعدادات.',
+        402 => 'الحساب مفيهوش رصيد كفاية.',
+        404 => 'اسم النموذج أو الرابط غلط. راجعهم في الإعدادات.',
         429 => 'طلبات كتير ورا بعض. استنى دقيقة وجرّب تاني.',
         >= 500 => 'الخدمة مشغولة دلوقتي. جرّب كمان شوية.',
-        _ => 'الطلب اترفض ($type).',
+        _ => 'الطلب اترفض (${res.statusCode}).',
       });
     }
     return parseAnswer(body);
@@ -159,11 +206,13 @@ class AiService extends ChangeNotifier {
 
   Future<http.Response> _send(Future<http.Response> Function() call) async {
     try {
-      return await call().timeout(const Duration(seconds: 120));
+      return await call().timeout(const Duration(seconds: 180));
     } on SocketException {
-      throw AiError('مفيش إنترنت. المساعد محتاج اتصال.');
+      throw AiError('مش قادر أوصل للخدمة. اتأكد من النت ومن الرابط.');
     } on http.ClientException {
-      throw AiError('مفيش إنترنت. المساعد محتاج اتصال.');
+      throw AiError('مش قادر أوصل للخدمة. اتأكد من النت ومن الرابط.');
+    } on FormatException {
+      throw AiError('الرابط مكتوب غلط. راجعه في الإعدادات.');
     } on Exception {
       throw AiError('الطلب خد وقت طويل. جرّب تاني.');
     }
@@ -178,16 +227,18 @@ class AiService extends ChangeNotifier {
   }
 }
 
+/// A chat-completions request, the protocol open model hosts share.
 @visibleForTesting
-Map<String, dynamic> buildRequest(AiTask task, String notes, String? q) => {
-  'model': AiService.model,
-  'max_tokens': 16000,
-  'fallbacks': 'default',
-  'output_config': {
-    'effort': task == AiTask.minutes || task == AiTask.ask ? 'medium' : 'low',
-  },
-  'system': _system,
+Map<String, dynamic> buildRequest(
+  String model,
+  AiTask task,
+  String notes,
+  String? q,
+) => {
+  'model': model,
+  'temperature': 0.3,
   'messages': [
+    {'role': 'system', 'content': _system},
     {
       'role': 'user',
       'content': '<notes>\n$notes\n</notes>\n\n${_instruction(task, q)}',
@@ -195,17 +246,14 @@ Map<String, dynamic> buildRequest(AiTask task, String notes, String? q) => {
   ],
 };
 
-/// Pulls the answer text out of a Messages API response.
+/// Pulls the answer text out of a chat-completions response. Reasoning
+/// models may wrap their thinking in `<think>` tags; that part is dropped.
 @visibleForTesting
 String parseAnswer(Map<String, dynamic> body) {
-  if (body['stop_reason'] == 'refusal') {
-    throw AiError('المساعد رفض الطلب ده. جرّب صياغة تانية.');
-  }
-  final content = body['content'] as List? ?? const [];
-  final text = [
-    for (final b in content)
-      if (b is Map && b['type'] == 'text') b['text'] as String,
-  ].join().trim();
+  final choices = body['choices'] as List? ?? const [];
+  final message = choices.isEmpty ? null : (choices.first as Map)['message'];
+  var text = message is Map ? (message['content'] as String? ?? '') : '';
+  text = text.replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '').trim();
   if (text.isEmpty) throw AiError('ما رجعش رد. جرّب تاني.');
   return text;
 }

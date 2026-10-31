@@ -8,40 +8,33 @@ import 'package:futurenote/screens/assistant.dart';
 import 'package:futurenote/screens/notebook_screen.dart';
 
 void main() {
-  test('request carries the notes, the task and the fallback', () {
-    final r = buildRequest(AiTask.ask, 'محمد قال نبدأ', 'مين قال نبدأ؟');
-    expect(r['model'], 'claude-opus-5-5');
-    expect(r['fallbacks'], 'default');
-    final content = (r['messages'] as List).single['content'] as String;
+  test('request carries the model, the notes and the task', () {
+    final r = buildRequest(
+      'qwen',
+      AiTask.ask,
+      'محمد قال نبدأ',
+      'مين قال نبدأ؟',
+    );
+    expect(r['model'], 'qwen');
+    final msgs = r['messages'] as List;
+    expect(msgs.first['role'], 'system');
+    final content = msgs.last['content'] as String;
     expect(content, contains('<notes>\nمحمد قال نبدأ\n</notes>'));
     expect(content, contains('مين قال نبدأ؟'));
-    expect((r['output_config'] as Map)['effort'], 'medium');
-    expect(
-      (buildRequest(AiTask.summary, 'x', null)['output_config']
-          as Map)['effort'],
-      'low',
-    );
   });
 
-  test('answer text is read from text blocks; refusals and empties fail', () {
+  test('answer text is read from the first choice, without think tags', () {
     expect(
       parseAnswer({
-        'stop_reason': 'end_turn',
-        'content': [
-          {'type': 'thinking', 'thinking': ''},
-          {'type': 'text', 'text': ' ملخص '},
+        'choices': [
+          {
+            'message': {'content': '<think>بفكر</think>\n ملخص '},
+          },
         ],
       }),
       'ملخص',
     );
-    expect(
-      () => parseAnswer({'stop_reason': 'refusal', 'content': []}),
-      throwsA(isA<AiError>()),
-    );
-    expect(
-      () => parseAnswer({'stop_reason': 'end_turn', 'content': []}),
-      throwsA(isA<AiError>()),
-    );
+    expect(() => parseAnswer({'choices': []}), throwsA(isA<AiError>()));
   });
 
   test('long answers wrap onto several page lines', () {

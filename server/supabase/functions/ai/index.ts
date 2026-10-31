@@ -1,15 +1,17 @@
-// FUTURENOTE assistant: a Supabase Edge Function that keeps the Claude API key
-// on the server. The app sends { task, notes, question } and gets { text }.
+// FUTURENOTE assistant: a Supabase Edge Function that keeps the model
+// provider's key on the server. It talks to any open-source model host that
+// speaks the chat-completions protocol (OpenRouter, Groq, Ollama, vLLM...).
+// The app sends { task, notes, question } and gets { text }.
 //
 // Deploy:
-//   supabase secrets set ANTHROPIC_API_KEY=...
+//   supabase secrets set AI_BASE_URL=https://openrouter.ai/api/v1 \
+//     AI_MODEL=qwen/qwen-2.5-72b-instruct AI_API_KEY=...
 //   supabase functions deploy ai --no-verify-jwt
 // Then paste the function URL into the app's assistant settings.
-import Anthropic from "npm:@anthropic-ai/sdk";
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY
-
-const MODEL = "claude-opus-5-5";
+const BASE_URL = (Deno.env.get("AI_BASE_URL") ?? "").replace(/\/+$/, "");
+const MODEL = Deno.env.get("AI_MODEL") ?? "";
+const API_KEY = Deno.env.get("AI_API_KEY") ?? "";
 const MAX_NOTES_CHARS = 200_000;
 
 // Keep in sync with lib/ai.dart.
@@ -72,32 +74,35 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const response = await client.beta.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: {
-        effort: input.task === "minutes" || input.task === "ask" ? "medium" : "low",
+    const res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(API_KEY ? { authorization: `Bearer ${API_KEY}` } : {}),
       },
-      system: SYSTEM,
-      messages: [{ role: "user", content: `<notes>\n${notes}\n</notes>\n\n${ask}` }],
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: SYSTEM },
+          { role: "user", content: `<notes>\n${notes}\n</notes>\n\n${ask}` },
+        ],
+      }),
     });
-    if (response.stop_reason === "refusal") {
-      return reply(200, { error: "المساعد رفض الطلب ده. جرّب صياغة تانية." });
-    }
-    const text = response.content
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("")
-      .trim();
-    return reply(200, { text });
-  } catch (error) {
-    if (error instanceof Anthropic.RateLimitError) {
+    if (res.status === 429) {
       return reply(429, { error: "طلبات كتير ورا بعض. استنى دقيقة." });
-    } else if (error instanceof Anthropic.APIError) {
-      console.error(`Claude API error ${error.status}: ${error.message}`);
+    }
+    if (!res.ok) {
+      console.error(`Model host error ${res.status}: ${await res.text()}`);
       return reply(502, { error: "الخدمة مشغولة دلوقتي. جرّب كمان شوية." });
     }
+    const data = await res.json();
+    const text = String(data?.choices?.[0]?.message?.content ?? "")
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .trim();
+    if (!text) return reply(200, { error: "ما رجعش رد. جرّب تاني." });
+    return reply(200, { text });
+  } catch (error) {
     console.error(error);
     return reply(500, { error: "حصلت مشكلة في السيرفر." });
   }

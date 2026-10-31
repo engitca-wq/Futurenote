@@ -128,7 +128,7 @@ class _AssistantSheetState extends State<AssistantSheet> {
                 const SizedBox(height: 12),
                 if (!ai.configured) ...[
                   const Text(
-                    'المساعد محتاج إعداد مرة واحدة: رابط السيرفر، أو مفتاح الخدمة للتجربة.',
+                    'المساعد محتاج إعداد مرة واحدة: تختار مزوّد النموذج المفتوح وتحط المفتاح.',
                   ),
                   const SizedBox(height: 8),
                   FilledButton.icon(
@@ -263,15 +263,54 @@ class AssistantSettingsScreen extends StatefulWidget {
 
 class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
   late final _server = TextEditingController(text: widget.ai.serverUrl);
+  late final _base = TextEditingController(text: widget.ai.baseUrl);
   late final _key = TextEditingController(text: widget.ai.apiKey);
+  late final _model = TextEditingController(text: widget.ai.model);
   bool _show = false;
+  String? _note;
 
   @override
   void dispose() {
     _server.dispose();
+    _base.dispose();
     _key.dispose();
+    _model.dispose();
     super.dispose();
   }
+
+  void _usePreset(AiPreset p) {
+    setState(() {
+      _base.text = p.baseUrl;
+      _model.text = p.modelHint;
+      _note = p.note;
+    });
+  }
+
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    String? hint,
+    bool secret = false,
+  }) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: TextField(
+      controller: c,
+      obscureText: secret && !_show,
+      textDirection: TextDirection.ltr,
+      autocorrect: false,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        border: const OutlineInputBorder(),
+        suffixIcon: secret
+            ? IconButton(
+                icon: Icon(_show ? Icons.visibility_off : Icons.visibility),
+                onPressed: () => setState(() => _show = !_show),
+              )
+            : null,
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -281,45 +320,49 @@ class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          Text('رابط سيرفر FUTURENOTE', style: theme.textTheme.titleMedium),
+          Text('نموذج مفتوح المصدر', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
           const Text(
-            'ده الإعداد الأساسي: المفتاح بيفضل على السيرفر ومحدش يقدر يوصله.',
+            'اختار مزوّد، أو اكتب رابط أي خدمة متوافقة مع OpenAI. المفتاح بيتحفظ على الجهاز ده بس.',
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _server,
-            textDirection: TextDirection.ltr,
-            keyboardType: TextInputType.url,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              hintText: 'https://….supabase.co/functions/v1/ai',
-            ),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final p in aiPresets)
+                ActionChip(label: Text(p.name), onPressed: () => _usePreset(p)),
+            ],
           ),
-          const SizedBox(height: 24),
-          Text('أو: مفتاح Claude للتجربة', style: theme.textTheme.titleMedium),
+          if (_note != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_note!, style: theme.textTheme.bodySmall),
+            ),
+          const SizedBox(height: 12),
+          _field(_base, 'رابط الخدمة', hint: 'https://…/v1'),
+          _field(_model, 'اسم النموذج', hint: 'qwen/qwen-2.5-72b-instruct'),
+          _field(_key, 'المفتاح (لو الخدمة محتاجاه)', secret: true),
+          const Divider(height: 32),
+          Text('أو: سيرفر FUTURENOTE', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
           const Text(
-            'للتجربة على موبايلك بس. المفتاح بيتحفظ على الجهاز ده، وأي استخدام بيتحسب على حسابك في console.anthropic.com.',
+            'لما نرفع السيرفر، المفتاح هيبقى عليه بدل الموبايل. لو الرابط ده مكتوب، المساعد هيستخدمه.',
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _key,
-            obscureText: !_show,
-            textDirection: TextDirection.ltr,
-            decoration: InputDecoration(
-              border: const OutlineInputBorder(),
-              hintText: 'sk-ant-…',
-              suffixIcon: IconButton(
-                icon: Icon(_show ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setState(() => _show = !_show),
-              ),
-            ),
+          _field(
+            _server,
+            'رابط السيرفر',
+            hint: 'https://….supabase.co/functions/v1/ai',
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
           FilledButton(
             onPressed: () async {
-              await widget.ai.save(server: _server.text, key: _key.text);
+              await widget.ai.save(
+                server: _server.text,
+                base: _base.text,
+                key: _key.text,
+                model: _model.text,
+              );
               if (context.mounted) Navigator.pop(context);
             },
             child: const Text('حفظ'),
