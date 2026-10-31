@@ -270,9 +270,81 @@ class _NotebookScreenState extends State<NotebookScreen> {
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (_) =>
-          _RecordingsSheet(book: book, store: widget.store, player: player),
+      builder: (_) => _RecordingsSheet(
+        book: book,
+        store: widget.store,
+        player: player,
+        onInsert: _insertText,
+      ),
     );
+  }
+
+  /// Text tool: type (or paste) text where the page was tapped, or edit the
+  /// typed line that was tapped.
+  Future<void> _typeAt(Offset at, TypedLine? hit) async {
+    final controller = TextEditingController(text: hit?.text ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(hit == null ? 'اكتب نص' : 'تعديل النص'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 2,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            hintText: 'اكتب أو الصق النص هنا',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          if (hit != null)
+            TextButton(
+              onPressed: () => Navigator.pop(context, ''),
+              child: const Text('حذف'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('تم'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (result == null || !mounted) return;
+    final lines = [for (final l in result.split('\n')) ...wrapLine(l)];
+    if (hit == null && lines.isEmpty) return;
+    const rule = 56.0, firstRule = 110.0, h = 50.0;
+    // Snap to the ruled row that holds the tap (or the edited line's row).
+    var y = hit != null ? hit.box.bottom : firstRule;
+    if (hit == null) {
+      while (y < at.dy && y < kPageHeight - 40) {
+        y += rule;
+      }
+    }
+    final placed = [
+      for (var i = 0; i < lines.length; i++)
+        if (y + i * rule <= kPageHeight - 20)
+          TypedLine(
+            box: Rect.fromLTWH(60, y + i * rule - h, kPageWidth - 120, h),
+            text: lines[i],
+            color: pen.color,
+          ),
+    ];
+    (_undo[page.id] ??= []).add(_now);
+    _redo[page.id]?.clear();
+    setState(() {
+      page.typed = [
+        for (final t in page.typed)
+          if (!identical(t, hit)) t,
+        ...placed,
+      ];
+    });
+    widget.store.changed(book);
   }
 
   void _assistant() {
@@ -495,6 +567,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
                               pen: pen,
                               onChanged: _changed,
                               onStrokeTap: _listenMode ? _onStrokeTap : null,
+                              onTextTap: _typeAt,
                               litRange: now == null
                                   ? null
                                   : (
@@ -593,6 +666,7 @@ class _Toolbar extends StatelessWidget {
                 tool(PenMode.pen, Icons.edit, 'قلم'),
                 tool(PenMode.highlighter, Icons.border_color, 'هايلايتر'),
                 tool(PenMode.eraser, Icons.cleaning_services_outlined, 'ممحاة'),
+                tool(PenMode.text, Icons.keyboard_outlined, 'كتابة بالكيبورد'),
                 const _Divider(),
                 for (final c in PenSettings.inkColors)
                   GestureDetector(
@@ -986,11 +1060,13 @@ class _RecordingsSheet extends StatefulWidget {
     required this.book,
     required this.store,
     required this.player,
+    required this.onInsert,
   });
 
   final Notebook book;
   final NotebookStore store;
   final NotePlayer player;
+  final void Function(List<String> lines) onInsert;
 
   @override
   State<_RecordingsSheet> createState() => _RecordingsSheetState();
@@ -1079,17 +1155,43 @@ class _RecordingsSheetState extends State<_RecordingsSheet> {
                           r.transcript.map((p) => p.text).join(' '),
                           style: theme.textTheme.bodyMedium,
                         ),
-                        Align(
-                          alignment: AlignmentDirectional.centerEnd,
-                          child: TextButton.icon(
-                            icon: const Icon(Icons.copy, size: 16),
-                            label: const Text('نسخ النص'),
-                            onPressed: () => Clipboard.setData(
-                              ClipboardData(
-                                text: r.transcript.map((p) => p.text).join(' '),
-                              ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton.icon(
+                              icon: const Icon(Icons.copy, size: 16),
+                              label: const Text('نسخ'),
+                              onPressed: () {
+                                Clipboard.setData(
+                                  ClipboardData(
+                                    text: r.transcript
+                                        .map((p) => p.text)
+                                        .join(' '),
+                                  ),
+                                );
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'اتنسخ. تقدر تلصقه بأداة الكيبورد في الصفحة أو في أي تطبيق.',
+                                    ),
+                                  ),
+                                );
+                              },
                             ),
-                          ),
+                            FilledButton.tonalIcon(
+                              icon: const Icon(
+                                Icons.vertical_align_bottom,
+                                size: 16,
+                              ),
+                              label: const Text('إدراج في الصفحة'),
+                              onPressed: () {
+                                widget.onInsert([
+                                  r.transcript.map((p) => p.text).join(' '),
+                                ]);
+                                Navigator.pop(context);
+                              },
+                            ),
+                          ],
                         ),
                       ],
                     ],

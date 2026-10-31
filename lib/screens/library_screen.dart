@@ -233,6 +233,9 @@ bool notebookMatches(Notebook b, String q) {
   if (b.title.toLowerCase().contains(needle)) return true;
   for (final p in b.pages) {
     if (p.text?.toLowerCase().contains(needle) ?? false) return true;
+    for (final t in p.typed) {
+      if (t.text.toLowerCase().contains(needle)) return true;
+    }
   }
   for (final r in b.recordings) {
     for (final t in r.transcript) {

@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'models.dart';
 
-enum PenMode { pen, highlighter, eraser }
+enum PenMode { pen, highlighter, eraser, text }
 
 /// Pen settings shared by every page of an open notebook.
 class PenSettings extends ChangeNotifier {
@@ -48,6 +48,7 @@ class InkPageView extends StatefulWidget {
     required this.pen,
     required this.onChanged,
     this.onStrokeTap,
+    this.onTextTap,
     this.litRange,
   });
 
@@ -60,6 +61,9 @@ class InkPageView extends StatefulWidget {
 
   /// When set, a tap on ink reports the stroke instead of drawing a dot.
   final void Function(InkStroke stroke)? onStrokeTap;
+
+  /// Text mode: a tap reports the page point and the typed line under it.
+  final void Function(Offset at, TypedLine? hit)? onTextTap;
 
   /// Strokes written inside this time range (epoch ms) are drawn in the
   /// accent colour, to show what was written up to the playing moment.
@@ -115,6 +119,15 @@ class _InkPageViewState extends State<InkPageView> {
           .where((s) => s.hits(Offset(pt.x, pt.y), 14))
           .firstOrNull;
       if (hit != null) widget.onStrokeTap!(hit);
+      return;
+    }
+    if (widget.pen.mode == PenMode.text &&
+        e.kind != PointerDeviceKind.invertedStylus) {
+      final at = Offset(pt.x, pt.y);
+      final hit = widget.page.typed.reversed
+          .where((t) => t.box.inflate(6).contains(at))
+          .firstOrNull;
+      widget.onTextTap?.call(at, hit);
       return;
     }
     _pointer = e.pointer;
