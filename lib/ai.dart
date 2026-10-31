@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'models.dart';
+
 /// What the assistant can do with a set of notes.
 enum AiTask {
   summary('ملخص'),
@@ -79,7 +81,7 @@ const aiPresets = [
     'Groq',
     'https://api.groq.com/openai/v1',
     'llama-3.3-70b-versatile',
-    'سريع جدًا، وفيه استخدام مجاني محدود.',
+    'سريع جدًا، وفيه استخدام مجاني محدود، وبيحوّل التسجيلات الصوتية لنص كمان (Whisper).',
   ),
   AiPreset(
     'Ollama (سيرفرك)',
@@ -100,7 +102,12 @@ class AiService extends ChangeNotifier {
   String baseUrl = '';
   String apiKey = '';
   String model = '';
+
+  /// Speech model for turning saved recordings into text.
+  String sttModel = '';
   bool loaded = false;
+
+  static const defaultSttModel = 'whisper-large-v3-turbo';
 
   bool get configured =>
       serverUrl.isNotEmpty || (baseUrl.isNotEmpty && model.isNotEmpty);
@@ -117,6 +124,7 @@ class AiService extends ChangeNotifier {
         baseUrl = j['base'] as String? ?? '';
         apiKey = j['key'] as String? ?? '';
         model = j['model'] as String? ?? '';
+        sttModel = j['stt'] as String? ?? '';
       }
     } catch (e) {
       debugPrint('AI settings unreadable: $e');
@@ -130,11 +138,13 @@ class AiService extends ChangeNotifier {
     required String base,
     required String key,
     required String model,
+    String? stt,
   }) async {
     serverUrl = server.trim();
     baseUrl = base.trim().replaceAll(RegExp(r'/+$'), '');
     apiKey = key.trim();
     this.model = model.trim();
+    if (stt != null) sttModel = stt.trim();
     final f = await _file();
     await f.writeAsString(
       jsonEncode({
@@ -142,6 +152,7 @@ class AiService extends ChangeNotifier {
         'base': baseUrl,
         'key': apiKey,
         'model': this.model,
+        'stt': sttModel,
       }),
     );
     notifyListeners();
@@ -204,6 +215,40 @@ class AiService extends ChangeNotifier {
     return parseAnswer(body);
   }
 
+  /// Turns a saved recording into timed text with a Whisper model on the
+  /// same provider (Groq and most OpenAI-compatible hosts offer one).
+  Future<List<TranscriptPiece>> transcribe(File audio) async {
+    if (baseUrl.isEmpty) {
+      throw AiError(
+        'تحويل التسجيل لنص محتاج إعداد المساعد الأول (Groq مثلًا). افتح إعدادات المساعد.',
+      );
+    }
+    final req =
+        http.MultipartRequest(
+            'POST',
+            Uri.parse('$baseUrl/audio/transcriptions'),
+          )
+          ..fields['model'] = sttModel.isEmpty ? defaultSttModel : sttModel
+          ..fields['language'] = 'ar'
+          ..fields['response_format'] = 'verbose_json'
+          ..files.add(await http.MultipartFile.fromPath('file', audio.path));
+    if (apiKey.isNotEmpty) req.headers['authorization'] = 'Bearer $apiKey';
+    final res = await _send(
+      () async => http.Response.fromStream(await _http.send(req)),
+    );
+    final body = _json(res);
+    if (res.statusCode != 200) {
+      throw AiError(switch (res.statusCode) {
+        401 || 403 => 'المفتاح غلط أو مالوش صلاحية. راجعه في الإعدادات.',
+        404 || 400 => 'المزوّد ده مش بيحوّل الصوت لنص. استخدم Groq، أو اكتب اسم نموذج الصوت في الإعدادات.',
+        413 => 'التسجيل كبير على المزوّد. جرّب تسجيل أقصر.',
+        429 => 'طلبات كتير ورا بعض. استنى دقيقة وجرّب تاني.',
+        _ => 'الطلب اترفض (${res.statusCode}).',
+      });
+    }
+    return parseTranscription(body);
+  }
+
   Future<http.Response> _send(Future<http.Response> Function() call) async {
     try {
       return await call().timeout(const Duration(seconds: 180));
@@ -256,4 +301,23 @@ String parseAnswer(Map<String, dynamic> body) {
   text = text.replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '').trim();
   if (text.isEmpty) throw AiError('ما رجعش رد. جرّب تاني.');
   return text;
+}
+
+/// Reads a Whisper "verbose_json" answer into timed pieces, falling back to
+/// the plain text when there are no segments.
+@visibleForTesting
+List<TranscriptPiece> parseTranscription(Map<String, dynamic> body) {
+  final segments = body['segments'] as List? ?? const [];
+  final pieces = [
+    for (final s in segments.whereType<Map>())
+      if ((s['text'] as String? ?? '').trim().isNotEmpty)
+        TranscriptPiece(
+          Duration(milliseconds: (((s['start'] as num?) ?? 0) * 1000).round()),
+          (s['text'] as String).trim(),
+        ),
+  ];
+  if (pieces.isNotEmpty) return pieces;
+  final text = (body['text'] as String? ?? '').trim();
+  if (text.isEmpty) throw AiError('ما اتسمعش كلام في التسجيل ده.');
+  return [TranscriptPiece(Duration.zero, text)];
 }

@@ -50,5 +50,29 @@ void main() {
     await tester.tap(find.text('نجمة').last);
     await tester.pumpAndSettle();
     expect(find.text('متقطع'), findsOneWidget);
+
+    // Layers: add one and it becomes the one being written on.
+    await tester.tap(find.byTooltip('الطبقات'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('طبقة جديدة'));
+    await tester.pumpAndSettle();
+    expect(book.pages.last.layers.length, 2);
+    expect(book.pages.last.active, book.pages.last.layers.last.id);
+    await tester.tapAt(const Offset(5, 5)); // close the sheet
+    await tester.pumpAndSettle();
+
+    // Pictures come from the gallery, the camera or files.
+    await tester.tap(find.byTooltip('إضافة صورة'));
+    await tester.pumpAndSettle();
+    expect(find.text('من الملفات'), findsOneWidget);
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+
+    // All pages at a glance.
+    await tester.tap(find.text('صفحة 2 من 2'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('1').last);
+    await tester.pumpAndSettle();
+    expect(find.text('صفحة 1 من 2'), findsOneWidget);
   });
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -82,6 +83,12 @@ class PenSettings extends ChangeNotifier {
   }
 
   static const inkColors = [0xFF1D1F22, 0xFF1F4FA3, 0xFFB3261E, 0xFF2F7D4F];
+  static const moreColors = [
+    0xFF1D1F22, 0xFF5F6368, 0xFF9AA0A6, 0xFFFFFFFF, //
+    0xFF1F4FA3, 0xFF1A73E8, 0xFF00897B, 0xFF2F7D4F, //
+    0xFF7CB342, 0xFFF9A825, 0xFFEF6C00, 0xFFB3261E, //
+    0xFFD81B60, 0xFF8E24AA, 0xFF5E35B1, 0xFF6D4C41,
+  ];
   static const highlightColor = 0x66F2C94C;
   static const widths = [2.2, 3.2, 5.0];
 }
@@ -115,14 +122,22 @@ class Selection extends ChangeNotifier {
     clear();
     if (polygon.length < 3) return false;
     for (final s in p.strokes) {
-      if (s.points.isEmpty) continue;
+      if (s.points.isEmpty || !p.isActive(s.layer)) continue;
       final inside = s.points
           .where((q) => _inPolygon(Offset(q.x, q.y), polygon))
           .length;
       if (inside >= s.points.length * 0.6) _strokes.add(s);
     }
-    _typed.addAll(p.typed.where((t) => _inPolygon(t.box.center, polygon)));
-    _images.addAll(p.images.where((i) => _inPolygon(i.box.center, polygon)));
+    _typed.addAll(
+      p.typed.where(
+        (t) => p.isActive(t.layer) && _inPolygon(t.box.center, polygon),
+      ),
+    );
+    _images.addAll(
+      p.images.where(
+        (i) => p.isActive(i.layer) && _inPolygon(i.box.center, polygon),
+      ),
+    );
     if (_strokes.isEmpty && _typed.isEmpty && _images.isEmpty) return false;
     page = p;
     _refreshBox();
@@ -261,10 +276,13 @@ class Selection extends ChangeNotifier {
   /// Pastes [content] onto [p], shifted by [d], and selects the pasted items.
   PageContent paste(NotePage p, PageContent content, Offset d) {
     final before = p.content;
-    final ns = [for (final s in content.strokes) s.transformed(d)];
-    final nt = [for (final t in content.typed) t.copyWith(box: t.box.shift(d))];
+    final l = p.active;
+    final ns = [for (final s in content.strokes) s.transformed(d, layer: l)];
+    final nt = [
+      for (final t in content.typed) t.copyWith(box: t.box.shift(d), layer: l),
+    ];
     final ni = [
-      for (final i in content.images) i.copyWith(box: i.box.shift(d)),
+      for (final i in content.images) i.copyWith(box: i.box.shift(d), layer: l),
     ];
     p.strokes = [...p.strokes, ...ns];
     p.typed = [...p.typed, ...nt];
@@ -433,10 +451,13 @@ class InkPageView extends StatefulWidget {
   State<InkPageView> createState() => _InkPageViewState();
 }
 
-enum _Drag { none, draw, erase, lasso, move, scale, shape }
+enum _Drag { none, draw, straight, erase, lasso, move, scale, shape }
 
 class _InkPageViewState extends State<InkPageView> {
   final _live = ValueNotifier<InkStroke?>(null);
+
+  /// Holding the pen still at the end of a stroke straightens it.
+  Timer? _hold;
   final _lassoPath = ValueNotifier<List<Offset>>(const []);
   PageContent? _before;
   double _scale = 1;
@@ -463,6 +484,7 @@ class _InkPageViewState extends State<InkPageView> {
 
   @override
   void dispose() {
+    _hold?.cancel();
     _commitEdit(disposing: true);
     _live.dispose();
     _lassoPath.dispose();
@@ -570,7 +592,10 @@ class _InkPageViewState extends State<InkPageView> {
       if (area != null && area.contains(at)) return; // inside the open field
       _commitEdit();
       final hit = widget.page.typed.reversed
-          .where((t) => t.box.inflate(6).contains(at))
+          .where(
+            (t) =>
+                widget.page.isActive(t.layer) && t.box.inflate(6).contains(at),
+          )
           .firstOrNull;
       if (widget.onTextTap?.call(at, hit) ?? false) return;
       _startEdit(at, hit);
@@ -607,6 +632,8 @@ class _InkPageViewState extends State<InkPageView> {
         tool: InkTool.pen,
         color: widget.pen.color,
         width: widget.pen.width,
+        dash: widget.pen.lineStyle,
+        layer: widget.page.active,
         points: [pt],
       );
       return;
@@ -617,6 +644,7 @@ class _InkPageViewState extends State<InkPageView> {
       tool: highlighter ? InkTool.highlighter : InkTool.pen,
       color: highlighter ? PenSettings.highlightColor : widget.pen.color,
       width: highlighter ? 22 : widget.pen.width,
+      layer: widget.page.active,
       points: [pt],
     );
   }
@@ -644,6 +672,8 @@ class _InkPageViewState extends State<InkPageView> {
           tool: InkTool.pen,
           color: widget.pen.color,
           width: widget.pen.width,
+          dash: widget.pen.lineStyle,
+          layer: widget.page.active,
           points: shapePoints(widget.pen.shape, _shapeStart, at, pt.t),
         );
       case _Drag.draw:
@@ -655,18 +685,51 @@ class _InkPageViewState extends State<InkPageView> {
         // Notify by reassigning so the live layer repaints.
         _live.value = null;
         _live.value = s;
+        if ((pt.x - last.x).abs() + (pt.y - last.y).abs() > 2) {
+          _hold?.cancel();
+          _hold = Timer(const Duration(milliseconds: 650), _straighten);
+        }
+      case _Drag.straight:
+        final s = _live.value!;
+        _live.value = InkStroke(
+          tool: s.tool,
+          color: s.color,
+          width: s.width,
+          layer: s.layer,
+          points: shapePoints(ShapeKind.line, _shapeStart, at, pt.t),
+        );
       case _Drag.none:
         break;
     }
     _last = at;
   }
 
+  /// The pen rested at the end of a stroke: turn it into a straight line
+  /// that keeps following the pen until it lifts.
+  void _straighten() {
+    final s = _live.value;
+    if (_drag != _Drag.draw || s == null || s.points.length < 2) return;
+    final a = Offset(s.points.first.x, s.points.first.y);
+    final b = Offset(s.points.last.x, s.points.last.y);
+    if ((b - a).distance < 40) return;
+    _shapeStart = a;
+    _drag = _Drag.straight;
+    _live.value = InkStroke(
+      tool: s.tool,
+      color: s.color,
+      width: s.width,
+      layer: s.layer,
+      points: shapePoints(ShapeKind.line, a, b, s.points.last.t),
+    );
+  }
+
   void _up(PointerEvent e) {
     if (e.pointer != _pointer) return;
     _pointer = null;
+    _hold?.cancel();
     final before = _before!;
     switch (_drag) {
-      case _Drag.draw || _Drag.shape:
+      case _Drag.draw || _Drag.shape || _Drag.straight:
         final s = _live.value;
         _live.value = null;
         if (s != null && (s.points.length > 1 || _drag == _Drag.draw)) {
@@ -689,9 +752,15 @@ class _InkPageViewState extends State<InkPageView> {
 
   void _eraseAt(Offset at) {
     final p = widget.page;
-    final keep = p.strokes.where((s) => !s.hits(at, 10)).toList();
-    final typed = p.typed.where((t) => !t.box.contains(at)).toList();
-    final images = p.images.where((i) => !i.box.contains(at)).toList();
+    final keep = p.strokes
+        .where((s) => !p.isActive(s.layer) || !s.hits(at, 10))
+        .toList();
+    final typed = p.typed
+        .where((t) => !p.isActive(t.layer) || !t.box.contains(at))
+        .toList();
+    final images = p.images
+        .where((i) => !p.isActive(i.layer) || !i.box.contains(at))
+        .toList();
     if (keep.length != p.strokes.length ||
         typed.length != p.typed.length ||
         images.length != p.images.length) {
@@ -800,7 +869,12 @@ class PagePainter extends CustomPainter {
        typed = page.typed,
        images = page.images,
        template = page.template,
+       layerKey = [for (final l in page.layers) '${l.id}:${l.visible}']
+           .join(','),
        super(repaint: ImageStore.instance.version);
+
+  /// Changes when layers are added, hidden, removed or reordered.
+  final String layerKey;
 
   final NotePage page;
   final double scale;
@@ -821,18 +895,24 @@ class PagePainter extends CustomPainter {
       );
     }
     paintTemplate(canvas, size, page.template, scale);
-    for (final i in page.images) {
-      paintImage(canvas, i, scale);
-    }
-    for (final s in page.strokes) {
-      final r = litRange;
-      final t = s.points.isEmpty ? 0 : s.points.first.t;
-      final lit =
-          r != null && s.tool == InkTool.pen && t >= r.from && t <= r.to;
-      paintStroke(canvas, s, scale, colorOverride: lit ? accent : null);
-    }
-    for (final t in page.typed) {
-      paintTyped(canvas, t, scale);
+    // Layer by layer, bottom first; each layer keeps pictures under ink.
+    for (final layer in page.layers) {
+      if (!layer.visible) continue;
+      bool on(String l) => page.layerOf(l) == layer.id;
+      for (final i in page.images) {
+        if (on(i.layer)) paintImage(canvas, i, scale);
+      }
+      for (final s in page.strokes) {
+        if (!on(s.layer)) continue;
+        final r = litRange;
+        final t = s.points.isEmpty ? 0 : s.points.first.t;
+        final lit =
+            r != null && s.tool == InkTool.pen && t >= r.from && t <= r.to;
+        paintStroke(canvas, s, scale, colorOverride: lit ? accent : null);
+      }
+      for (final t in page.typed) {
+        if (on(t.layer)) paintTyped(canvas, t, scale);
+      }
     }
   }
 
@@ -844,6 +924,7 @@ class PagePainter extends CustomPainter {
       old.typed != typed ||
       old.images != images ||
       old.template != template ||
+      old.layerKey != layerKey ||
       old.litRange != litRange;
 }
 

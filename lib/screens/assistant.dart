@@ -266,6 +266,7 @@ class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
   late final _base = TextEditingController(text: widget.ai.baseUrl);
   late final _key = TextEditingController(text: widget.ai.apiKey);
   late final _model = TextEditingController(text: widget.ai.model);
+  late final _stt = TextEditingController(text: widget.ai.sttModel);
   bool _show = false;
   String? _note;
 
@@ -275,6 +276,7 @@ class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
     _base.dispose();
     _key.dispose();
     _model.dispose();
+    _stt.dispose();
     super.dispose();
   }
 
@@ -342,6 +344,11 @@ class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
           _field(_base, 'رابط الخدمة', hint: 'https://…/v1'),
           _field(_model, 'اسم النموذج', hint: 'qwen/qwen-2.5-72b-instruct'),
           _field(_key, 'المفتاح (لو الخدمة محتاجاه)', secret: true),
+          _field(
+            _stt,
+            'نموذج تحويل التسجيلات لنص',
+            hint: AiService.defaultSttModel,
+          ),
           const Divider(height: 32),
           Text('أو: سيرفر FUTURENOTE', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
@@ -362,6 +369,7 @@ class _AssistantSettingsScreenState extends State<AssistantSettingsScreen> {
                 base: _base.text,
                 key: _key.text,
                 model: _model.text,
+                stt: _stt.text,
               );
               if (context.mounted) Navigator.pop(context);
             },

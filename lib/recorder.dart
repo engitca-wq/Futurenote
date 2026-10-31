@@ -13,14 +13,21 @@ import 'store.dart';
 /// How a recording is made. Phones give the microphone to one listener at a
 /// time, so keeping the audio file and live speech-to-text are separate modes.
 enum RecordMode {
+  dictate(
+    'الكتابة بالصوت على الصفحة',
+    'اللي بتقوله يتكتب نص على الصفحة على طول، بلون ونوع الخط اللي مختارهم (محتاج إنترنت)',
+  ),
   live(
     'تحويل الكلام لنص',
     'يكتب الكلام العربي نصًا وانت بتتكلم (محتاج إنترنت، والصوت نفسه مش بيتحفظ)',
   ),
   audio(
-    'تسجيل صوت فقط',
-    'يحفظ الصوت بدون نص، وتقدر تضغط على أي كلمة كتبتها تسمع اللي اتقال وقتها',
+    'تسجيل صوت',
+    'يحفظ الصوت، وتقدر تضغط على أي كلمة كتبتها تسمع اللي اتقال وقتها. وبعدين تحوّله لنص من قائمة التسجيلات',
   );
+
+  /// Live speech-to-text modes (they cannot keep the audio).
+  bool get speech => this != audio;
 
   const RecordMode(this.label, this.hint);
   final String label;
@@ -49,7 +56,11 @@ class NoteRecorder extends ChangeNotifier {
   String? error;
   Timer? _tick;
 
-  bool get recording => mode != null;
+  bool get recording => mode != null && !_stopping;
+  bool _stopping = false;
+
+  /// Called with each finished sentence while dictating.
+  void Function(String text)? onDictated;
   Duration get elapsed =>
       started == null ? Duration.zero : DateTime.now().difference(started!);
 
@@ -68,7 +79,7 @@ class NoteRecorder extends ChangeNotifier {
   }
 
   Future<bool> _start(Notebook book, RecordMode m) async {
-    if (recording) return false;
+    if (mode != null) return false;
     error = null;
     pieces.clear();
     partial = '';
@@ -101,7 +112,7 @@ class NoteRecorder extends ChangeNotifier {
       const Duration(seconds: 1),
       (_) => notifyListeners(),
     );
-    if (m == RecordMode.live) await _listen();
+    if (m.speech) await _listen();
     notifyListeners();
     return true;
   }
@@ -134,7 +145,7 @@ class NoteRecorder extends ChangeNotifier {
   }
 
   Future<void> _listen() async {
-    if (mode != RecordMode.live) return;
+    if (!(mode?.speech ?? false)) return;
     await _speech.listen(
       onResult: _onResult,
       listenOptions: SpeechListenOptions(
@@ -149,25 +160,45 @@ class NoteRecorder extends ChangeNotifier {
   }
 
   void _onResult(SpeechRecognitionResult r) {
-    if (mode != RecordMode.live) return;
+    if (!(mode?.speech ?? false)) return;
     if (r.finalResult) {
-      final text = r.recognizedWords.trim();
-      if (text.isNotEmpty) {
-        pieces.add(TranscriptPiece(elapsed, text));
-      }
-      partial = '';
+      partial = r.recognizedWords;
+      _keepPartial();
     } else {
       partial = r.recognizedWords;
     }
     notifyListeners();
   }
 
+  /// Saves what was heard so far as a finished piece.
+  void _keepPartial() {
+    final text = partial.trim();
+    partial = '';
+    if (text.isEmpty) return;
+    final last = pieces.lastOrNull;
+    if (last != null &&
+        last.text == text &&
+        elapsed - last.at < const Duration(seconds: 3)) {
+      return; // the same words reported twice
+    }
+    pieces.add(TranscriptPiece(elapsed, text));
+    if (mode == RecordMode.dictate) onDictated?.call(text);
+  }
+
   void _onStatus(String status) {
     // Android stops listening after a pause; keep going until the user stops.
-    if (mode == RecordMode.live &&
-        (status == 'done' || status == 'notListening')) {
+    // Some phones end without a final result, so keep what was heard.
+    // 'done' comes after the final result, so nothing is counted twice.
+    if ((mode?.speech ?? false) && status == 'done') {
+      if (partial.trim().isNotEmpty) {
+        _keepPartial();
+        notifyListeners();
+      }
+      if (_stopping) return;
       Future.delayed(const Duration(milliseconds: 250), () {
-        if (mode == RecordMode.live && !_speech.isListening) _listen();
+        if ((mode?.speech ?? false) && !_stopping && !_speech.isListening) {
+          _listen();
+        }
       });
     }
   }
@@ -190,18 +221,24 @@ class NoteRecorder extends ChangeNotifier {
     if (!recording) return null;
     final m = mode!;
     final duration = elapsed;
-    mode = null;
     _tick?.cancel();
+    if (m.speech) {
+      _stopping = true;
+      try {
+        await _speech.stop();
+        // stop() can still deliver the last words; give it a moment.
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        _keepPartial();
+      } finally {
+        _stopping = false;
+      }
+    }
+    mode = null;
     if (m == RecordMode.audio) {
       final path = await _audio.stop() ?? _path;
       final f = path == null ? null : File(path);
       if (f == null || !await f.exists() || await f.length() == 0) {
         error = 'التسجيل اتوقف بس ملف الصوت فاضي، جرّب تاني';
-      }
-    } else {
-      await _speech.stop();
-      if (partial.trim().isNotEmpty) {
-        pieces.add(TranscriptPiece(duration, partial.trim()));
       }
     }
     partial = '';

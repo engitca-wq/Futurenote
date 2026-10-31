@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -202,6 +203,223 @@ class _NotebookScreenState extends State<NotebookScreen> {
     widget.store.changed(book);
   }
 
+  /// All pages as thumbnails; tap one to open it.
+  void _pagesOverview() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) {
+        final accent = Theme.of(context).colorScheme.primary;
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(context).height * 0.75,
+            child: GridView.builder(
+              padding: const EdgeInsets.all(16),
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 160,
+                childAspectRatio: kPageWidth / (kPageHeight + 120),
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+              ),
+              itemCount: book.pages.length,
+              itemBuilder: (context, i) => InkWell(
+                onTap: () {
+                  Navigator.pop(context);
+                  _goTo(i);
+                },
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: AspectRatio(
+                        aspectRatio: kPageWidth / kPageHeight,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: i == _index ? accent : Colors.black12,
+                              width: i == _index ? 3 : 1,
+                            ),
+                          ),
+                          child: LayoutBuilder(
+                            builder: (context, c) => CustomPaint(
+                              painter: PagePainter(
+                                page: book.pages[i],
+                                scale: c.maxWidth / kPageWidth,
+                                accent: accent,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text('${i + 1}'),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ---- Layers ----
+
+  void _layers() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheet) {
+          final p = page;
+          void update(VoidCallback f) {
+            f();
+            setSheet(() {});
+            setState(() {});
+            widget.store.changed(book);
+          }
+
+          final theme = Theme.of(context);
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Text(
+                    'اختار الطبقة اللي هتكتب عليها. الممحاة والتحديد بيشتغلوا على الطبقة دي بس.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // Top layer first, like a stack of sheets.
+                for (final l in p.layers.reversed)
+                  ListTile(
+                    selected: p.active == l.id,
+                    selectedTileColor: theme.colorScheme.secondaryContainer,
+                    leading: IconButton(
+                      tooltip: l.visible ? 'إخفاء' : 'إظهار',
+                      icon: Icon(
+                        l.visible ? Icons.visibility : Icons.visibility_off,
+                      ),
+                      onPressed: () => update(() => l.visible = !l.visible),
+                    ),
+                    title: Text(l.name),
+                    subtitle: Text(
+                      p.active == l.id
+                          ? 'بتكتب عليها دلوقتي'
+                          : 'دوس عشان تكتب عليها',
+                    ),
+                    onTap: () => update(() {
+                      p.active = l.id;
+                      l.visible = true;
+                      selection.clear();
+                    }),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (v) async {
+                        final i = p.layers.indexOf(l);
+                        switch (v) {
+                          case 'up' when i < p.layers.length - 1:
+                            update(() {
+                              p.layers
+                                ..removeAt(i)
+                                ..insert(i + 1, l);
+                            });
+                          case 'down' when i > 0:
+                            update(() {
+                              p.layers
+                                ..removeAt(i)
+                                ..insert(i - 1, l);
+                            });
+                          case 'rename':
+                            final name = await _askText('اسم الطبقة', l.name);
+                            if (name != null && name.trim().isNotEmpty) {
+                              update(() => l.name = name.trim());
+                            }
+                          case 'delete':
+                            _changed(p.content);
+                            update(() {
+                              bool keep(String x) => p.layerOf(x) != l.id;
+                              p.strokes = [
+                                for (final s in p.strokes)
+                                  if (keep(s.layer)) s,
+                              ];
+                              p.typed = [
+                                for (final t in p.typed)
+                                  if (keep(t.layer)) t,
+                              ];
+                              p.images = [
+                                for (final x in p.images)
+                                  if (keep(x.layer)) x,
+                              ];
+                              p.layers.remove(l);
+                              p.active = p.active;
+                              selection.clear();
+                            });
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        const PopupMenuItem(value: 'up', child: Text('لفوق')),
+                        const PopupMenuItem(value: 'down', child: Text('لتحت')),
+                        const PopupMenuItem(
+                          value: 'rename',
+                          child: Text('تغيير الاسم'),
+                        ),
+                        if (p.layers.length > 1)
+                          const PopupMenuItem(
+                            value: 'delete',
+                            child: Text('حذف الطبقة وما عليها'),
+                          ),
+                      ],
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.add),
+                    label: const Text('طبقة جديدة'),
+                    onPressed: () => update(() {
+                      final l = PageLayer(
+                        id: newId(),
+                        name: 'طبقة ${p.layers.length + 1}',
+                      );
+                      p.layers.add(l);
+                      p.active = l.id;
+                      selection.clear();
+                    }),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<String?> _askText(String title, String initial) {
+    final c = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(controller: c, autofocus: true),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, c.text),
+            child: const Text('تم'),
+          ),
+        ],
+      ),
+    ).whenComplete(c.dispose);
+  }
+
   // ---- Recording ----
 
   Future<void> _record() async {
@@ -218,9 +436,11 @@ class _NotebookScreenState extends State<NotebookScreen> {
           children: [
             for (final m in RecordMode.values)
               ListTile(
-                leading: Icon(
-                  m == RecordMode.audio ? Icons.mic : Icons.subtitles_outlined,
-                ),
+                leading: Icon(switch (m) {
+                  RecordMode.audio => Icons.mic,
+                  RecordMode.live => Icons.subtitles_outlined,
+                  RecordMode.dictate => Icons.record_voice_over_outlined,
+                }),
                 title: Text(m.label),
                 subtitle: Text(m.hint),
                 onTap: () => Navigator.pop(context, m),
@@ -231,16 +451,24 @@ class _NotebookScreenState extends State<NotebookScreen> {
     );
     if (mode == null) return;
     await player.stop();
+    recorder.onDictated = mode == RecordMode.dictate
+        ? (text) {
+            if (mounted) _insertText([text], dictated: true);
+          }
+        : null;
     await recorder.start(book, mode);
   }
 
   Future<void> _stopRecording() async {
-    final wasLive = recorder.mode == RecordMode.live;
+    final was = recorder.mode;
     final rec = await recorder.stop();
+    recorder.onDictated = null;
     if (!mounted || rec == null) return;
-    if (rec.transcript.isNotEmpty) {
+    if (was == RecordMode.dictate && rec.transcript.isNotEmpty) {
+      _toast('اتكتب الكلام على الصفحة. زرار التراجع يشيل آخر جملة.');
+    } else if (rec.transcript.isNotEmpty) {
       _recordings();
-    } else if (wasLive) {
+    } else if (was?.speech ?? false) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -252,7 +480,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'اتحفظ التسجيل. اضغط زرار الإيد وبعدين أي كلمة كتبتها عشان تسمع.',
+            'اتحفظ التسجيل. اضغط زرار الإيد وبعدين أي كلمة كتبتها عشان تسمع، أو حوّله لنص من التسجيلات.',
           ),
         ),
       );
@@ -280,6 +508,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
         book: book,
         store: widget.store,
         player: player,
+        ai: widget.ai,
         onInsert: _insertText,
       ),
     );
@@ -343,6 +572,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
             font: pen.font,
             todo: pen.todo,
             done: pen.todo && (hit?.done ?? false) && lines.length == 1,
+            layer: hit?.layer ?? target.active,
           ),
     ];
     final undo = _undo[target.id] ??= [];
@@ -358,18 +588,76 @@ class _NotebookScreenState extends State<NotebookScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _addImage(ImageSource source) async {
-    final XFile? picked;
+  /// Asks where the picture comes from: gallery, camera or files.
+  Future<void> _pickImageSource() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (v, icon, label) in const [
+              ('gallery', Icons.image_outlined, 'من المعرض'),
+              ('camera', Icons.photo_camera_outlined, 'صورة بالكاميرا'),
+              ('files', Icons.folder_open, 'من الملفات'),
+            ])
+              ListTile(
+                leading: Icon(icon),
+                title: Text(label),
+                onTap: () => Navigator.pop(context, v),
+              ),
+          ],
+        ),
+      ),
+    );
+    switch (choice) {
+      case 'gallery':
+        await _addImage(ImageSource.gallery);
+      case 'camera':
+        await _addImage(ImageSource.camera);
+      case 'files':
+        await _addImage(null);
+    }
+  }
+
+  /// Adds a picture from [source], or from the phone's files when null.
+  Future<void> _addImage(ImageSource? source) async {
+    String? path;
     try {
-      picked = await ImagePicker().pickImage(source: source, maxWidth: 2000);
+      if (source == null) {
+        final f = await FilePicker.pickFile(type: FileType.image);
+        if (f == null) return;
+        path = f.path;
+        if (path == null) {
+          // A document from a cloud or content provider: copy it first.
+          final bytes = await f.xFile.readAsBytes();
+          final dot = f.name.lastIndexOf('.');
+          final tmp = File(
+            '${Directory.systemTemp.path}/${newId()}${dot == -1 ? '.jpg' : f.name.substring(dot)}',
+          );
+          await tmp.writeAsBytes(bytes);
+          path = tmp.path;
+        }
+      } else {
+        final picked = await ImagePicker().pickImage(
+          source: source,
+          maxWidth: 2000,
+        );
+        path = picked?.path;
+      }
     } catch (e) {
       _toast(
-        'مش قادر أفتح ${source == ImageSource.camera ? 'الكاميرا' : 'الصور'}: $e',
+        'مش قادر أفتح ${switch (source) {
+          ImageSource.camera => 'الكاميرا',
+          ImageSource.gallery => 'الصور',
+          null => 'الملفات',
+        }}: $e',
       );
       return;
     }
-    if (picked == null || !mounted) return;
-    final (file, size) = await ImageStore.instance.add(picked.path);
+    if (path == null || !mounted) return;
+    final (file, size) = await ImageStore.instance.add(path);
     // Fit inside 70% of the page width, centred near the top third.
     var w = kPageWidth * 0.7, h = w * size.height / size.width;
     if (h > kPageHeight * 0.5) {
@@ -378,6 +666,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
     }
     final img = PageImage(
       file: file,
+      layer: page.active,
       box: Rect.fromLTWH((kPageWidth - w) / 2, 160, w, h),
     );
     _changed(page.content);
@@ -461,7 +750,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
 
   /// Puts typed lines under the handwriting, on the ruled lines, keeping the
   /// ink as it is. Continues on a new page when there is no room left.
-  void _insertText(List<String> raw) {
+  void _insertText(List<String> raw, {bool dictated = false}) {
     final lines = [for (final l in raw) ...wrapLine(l)];
     if (lines.isEmpty) return;
     const rule = 56.0, firstRule = 110.0, h = 50.0;
@@ -490,6 +779,9 @@ class _NotebookScreenState extends State<NotebookScreen> {
         TypedLine(
           box: Rect.fromLTWH(60, y - h, kPageWidth - 120, h),
           text: text,
+          layer: target.active,
+          color: dictated ? pen.color : 0xFF1D1F22,
+          font: dictated ? pen.font : '',
         ),
       );
       y += rule;
@@ -498,7 +790,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
     _redo[target.id]?.clear();
     setState(() {
       target.typed = [...target.typed, ...placed];
-      target.text = lines.join('\n');
+      if (!dictated) target.text = lines.join('\n');
       if (overflow.isNotEmpty) {
         final next = NotePage(id: newId(), template: target.template);
         next.typed = [
@@ -511,12 +803,17 @@ class _NotebookScreenState extends State<NotebookScreen> {
                 h,
               ),
               text: overflow[i],
+              color: dictated ? pen.color : 0xFF1D1F22,
+              font: dictated ? pen.font : '',
             ),
         ];
         book.pages.insert(_index + 1, next);
+        // Dictation keeps going on the new page.
+        if (dictated) _index++;
       }
     });
     widget.store.changed(book, immediate: true);
+    if (dictated) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -577,6 +874,8 @@ class _NotebookScreenState extends State<NotebookScreen> {
                   _addImage(ImageSource.gallery);
                 case 'camera':
                   _addImage(ImageSource.camera);
+                case 'files':
+                  _addImage(null);
                 case 'sharePage':
                   _export(() => sharePageImage(book, _index));
                 case 'sharePdf':
@@ -598,6 +897,13 @@ class _NotebookScreenState extends State<NotebookScreen> {
                 child: ListTile(
                   leading: Icon(Icons.photo_camera_outlined),
                   title: Text('صورة بالكاميرا'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'files',
+                child: ListTile(
+                  leading: Icon(Icons.folder_open),
+                  title: Text('صورة من الملفات'),
                 ),
               ),
               const PopupMenuItem(
@@ -650,6 +956,11 @@ class _NotebookScreenState extends State<NotebookScreen> {
               onListenMode: () => setState(() => _listenMode = !_listenMode),
               recording: recorder.recording,
               onRecord: _record,
+              onImage: _pickImageSource,
+              layerName: page.layers.length > 1
+                  ? page.layers.firstWhere((l) => l.id == page.active).name
+                  : null,
+              onLayers: _layers,
             ),
             if (!_listenMode) _ModeBar(pen: pen),
             ListenableBuilder(
@@ -720,6 +1031,7 @@ class _NotebookScreenState extends State<NotebookScreen> {
               onPrev: () => _goTo(_index - 1),
               onNext: () => _goTo(_index + 1),
               onAdd: _addPage,
+              onAll: _pagesOverview,
             ),
           ],
         ),
@@ -846,7 +1158,7 @@ class _SelectionBar extends StatelessWidget {
                       ),
                   ],
                 ),
-                for (final c in PenSettings.inkColors)
+                for (final c in PenSettings.moreColors)
                   GestureDetector(
                     onTap: () => onEdit(selection.styleText(color: c)),
                     child: Container(
@@ -964,6 +1276,9 @@ class _Toolbar extends StatelessWidget {
     required this.onListenMode,
     required this.recording,
     required this.onRecord,
+    required this.layerName,
+    required this.onLayers,
+    required this.onImage,
   });
 
   final PenSettings pen;
@@ -971,6 +1286,9 @@ class _Toolbar extends StatelessWidget {
   final VoidCallback onListenMode;
   final bool recording;
   final VoidCallback onRecord;
+  final String? layerName;
+  final VoidCallback onLayers;
+  final VoidCallback onImage;
 
   @override
   Widget build(BuildContext context) {
@@ -1032,8 +1350,45 @@ class _Toolbar extends StatelessWidget {
                     child: Icon(pen.shape.icon),
                   ),
                 ),
+                IconButton(
+                  tooltip: 'خط مستقيم',
+                  isSelected:
+                      pen.mode == PenMode.shape && pen.shape == ShapeKind.line,
+                  style: IconButton.styleFrom(
+                    backgroundColor:
+                        pen.mode == PenMode.shape &&
+                            pen.shape == ShapeKind.line &&
+                            !listenMode
+                        ? theme.colorScheme.secondaryContainer
+                        : null,
+                  ),
+                  icon: const Icon(Icons.horizontal_rule),
+                  onPressed: () {
+                    if (listenMode) onListenMode();
+                    pen.shape = ShapeKind.line;
+                  },
+                ),
+                IconButton(
+                  tooltip: 'إضافة صورة',
+                  icon: const Icon(Icons.add_photo_alternate_outlined),
+                  onPressed: onImage,
+                ),
+                layerName == null
+                    ? IconButton(
+                        tooltip: 'الطبقات',
+                        icon: const Icon(Icons.layers_outlined),
+                        onPressed: onLayers,
+                      )
+                    : ActionChip(
+                        avatar: const Icon(Icons.layers, size: 18),
+                        label: Text(layerName!),
+                        onPressed: onLayers,
+                      ),
                 const _Divider(),
-                for (final c in PenSettings.inkColors)
+                for (final c in [
+                  ...PenSettings.inkColors,
+                  if (!PenSettings.inkColors.contains(pen.color)) pen.color,
+                ])
                   GestureDetector(
                     onTap: () {
                       if (listenMode) onListenMode();
@@ -1056,6 +1411,48 @@ class _Toolbar extends StatelessWidget {
                       ),
                     ),
                   ),
+                IconButton(
+                  tooltip: 'ألوان أكتر',
+                  icon: const Icon(Icons.palette_outlined),
+                  onPressed: () async {
+                    final c = await showModalBottomSheet<int>(
+                      context: context,
+                      showDragHandle: true,
+                      builder: (context) => SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              for (final c in PenSettings.moreColors)
+                                InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () => Navigator.pop(context, c),
+                                  child: Container(
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color: Color(c),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.black12,
+                                        width: pen.color == c ? 4 : 1,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                    if (c == null) return;
+                    if (listenMode) onListenMode();
+                    if (pen.mode == PenMode.highlighter) pen.mode = PenMode.pen;
+                    pen.color = c;
+                  },
+                ),
                 const _Divider(),
                 for (final w in PenSettings.widths)
                   InkWell(
@@ -1133,7 +1530,8 @@ class _RecordingBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final live = recorder.mode == RecordMode.live;
+    final live = recorder.mode?.speech ?? false;
+    final dictating = recorder.mode == RecordMode.dictate;
     final last = [
       ...recorder.pieces.map((p) => p.text),
       if (recorder.partial.isNotEmpty) recorder.partial,
@@ -1151,7 +1549,11 @@ class _RecordingBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            '${live ? 'تفريغ مباشر' : 'تسجيل'} ${clock(recorder.elapsed)}',
+            '${dictating
+                ? 'بيكتب بالصوت'
+                : live
+                ? 'تفريغ مباشر'
+                : 'تسجيل'} ${clock(recorder.elapsed)}',
             style: theme.textTheme.labelLarge,
           ),
           const SizedBox(width: 12),
@@ -1215,6 +1617,7 @@ class _PageBar extends StatelessWidget {
     required this.onPrev,
     required this.onNext,
     required this.onAdd,
+    required this.onAll,
   });
 
   final int index;
@@ -1222,6 +1625,7 @@ class _PageBar extends StatelessWidget {
   final VoidCallback onPrev;
   final VoidCallback onNext;
   final VoidCallback onAdd;
+  final VoidCallback onAll;
 
   @override
   Widget build(BuildContext context) {
@@ -1235,7 +1639,11 @@ class _PageBar extends StatelessWidget {
             icon: const Icon(Icons.arrow_back),
             onPressed: index > 0 ? onPrev : null,
           ),
-          Text('صفحة ${index + 1} من $count'),
+          TextButton.icon(
+            onPressed: onAll,
+            icon: const Icon(Icons.grid_view, size: 18),
+            label: Text('صفحة ${index + 1} من $count'),
+          ),
           IconButton(
             tooltip: 'الصفحة التالية',
             icon: const Icon(Icons.arrow_forward),
@@ -1425,12 +1833,14 @@ class _RecordingsSheet extends StatefulWidget {
     required this.book,
     required this.store,
     required this.player,
+    required this.ai,
     required this.onInsert,
   });
 
   final Notebook book;
   final NotebookStore store;
   final NotePlayer player;
+  final AiService ai;
   final void Function(List<String> lines) onInsert;
 
   @override
@@ -1438,6 +1848,39 @@ class _RecordingsSheet extends StatefulWidget {
 }
 
 class _RecordingsSheetState extends State<_RecordingsSheet> {
+  final _busy = <String>{};
+
+  Future<void> _transcribe(Recording r) async {
+    setState(() => _busy.add(r.id));
+    try {
+      final file = File(
+        '${widget.store.audioDir(widget.book.id).path}/${r.file}',
+      );
+      final pieces = await widget.ai.transcribe(file);
+      final done = Recording(
+        id: r.id,
+        file: r.file,
+        started: r.started,
+        duration: r.duration,
+        transcript: pieces,
+      );
+      final i = widget.book.recordings.indexOf(r);
+      if (i != -1) widget.book.recordings[i] = done;
+      widget.store.changed(widget.book, immediate: true);
+    } on AiError catch (e) {
+      _say(e.message);
+    } catch (e) {
+      _say('التحويل ما اشتغلش: $e');
+    } finally {
+      if (mounted) setState(() => _busy.remove(r.id));
+    }
+  }
+
+  void _say(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   Future<void> _delete(Recording r) async {
     if (widget.player.current?.id == r.id) await widget.player.stop();
     setState(() => widget.book.recordings.remove(r));
@@ -1514,12 +1957,78 @@ class _RecordingsSheetState extends State<_RecordingsSheet> {
                           ),
                         ],
                       ),
+                      if (r.transcript.isEmpty && r.file.isNotEmpty)
+                        Align(
+                          alignment: AlignmentDirectional.centerEnd,
+                          child: _busy.contains(r.id)
+                              ? const Padding(
+                                  padding: EdgeInsets.all(8),
+                                  child: SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                )
+                              : FilledButton.tonalIcon(
+                                  icon: const Icon(Icons.subtitles_outlined),
+                                  label: const Text('حوّل التسجيل لنص'),
+                                  onPressed: () => _transcribe(r),
+                                ),
+                        ),
+                      if (r.transcript.isEmpty && r.file.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            'ما اتسمعش كلام في التفريغ ده. اتأكد من النت واتكلم قريب من الموبايل.',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ),
                       if (r.transcript.isNotEmpty) ...[
                         const SizedBox(height: 6),
-                        SelectableText(
-                          r.transcript.map((p) => p.text).join(' '),
-                          style: theme.textTheme.bodyMedium,
-                        ),
+                        // Each piece with its time; tap a time to listen.
+                        for (final p in r.transcript)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                InkWell(
+                                  onTap: r.file.isEmpty
+                                      ? null
+                                      : () {
+                                          widget.player.play(
+                                            widget.book,
+                                            r,
+                                            from: p.at,
+                                          );
+                                          Navigator.pop(context);
+                                        },
+                                  child: Padding(
+                                    padding: const EdgeInsetsDirectional.only(
+                                      end: 8,
+                                    ),
+                                    child: Text(
+                                      clock(p.at),
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                            color: r.file.isEmpty
+                                                ? null
+                                                : theme.colorScheme.primary,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: SelectableText(
+                                    p.text,
+                                    style: theme.textTheme.bodyMedium,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
@@ -1551,7 +2060,7 @@ class _RecordingsSheetState extends State<_RecordingsSheet> {
                               label: const Text('إدراج في الصفحة'),
                               onPressed: () {
                                 widget.onInsert([
-                                  r.transcript.map((p) => p.text).join(' '),
+                                  for (final p in r.transcript) p.text,
                                 ]);
                                 Navigator.pop(context);
                               },

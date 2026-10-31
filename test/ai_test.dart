@@ -67,4 +67,18 @@ void main() {
     expect(notes, contains('صفحة 2:\nتاني'));
     expect(notes, contains('كلام اتقال'));
   });
+
+  test('whisper segments become timed transcript pieces', () {
+    final pieces = parseTranscription({
+      'text': 'أهلا بيكم النهارده',
+      'segments': [
+        {'start': 0.0, 'text': ' أهلا بيكم'},
+        {'start': 2.5, 'text': ' النهارده'},
+      ],
+    });
+    expect(pieces.map((p) => p.text), ['أهلا بيكم', 'النهارده']);
+    expect(pieces[1].at, const Duration(milliseconds: 2500));
+    expect(parseTranscription({'text': 'بس نص'}).single.text, 'بس نص');
+    expect(() => parseTranscription({'text': ' '}), throwsA(isA<AiError>()));
+  });
 }

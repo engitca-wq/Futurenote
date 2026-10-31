@@ -86,6 +86,41 @@ void main() {
     expect(before.typed.single.box.height, 50);
   });
 
+  test('layers: writing, lasso and saving keep to the chosen layer', () {
+    final page = NotePage(id: 'p', template: PageTemplate.blank);
+    page.strokes = [line(100, 100)];
+    page.layers.add(PageLayer(id: 'top', name: 'طبقة 2'));
+    page.active = 'top';
+    page.strokes = [
+      ...page.strokes,
+      line(100, 110).transformed(Offset.zero, layer: 'top'),
+    ];
+    final sel = Selection();
+    expect(sel.select(page, square(50, 50, 200, 200)), isTrue);
+    sel.delete();
+    // Only the top layer's stroke went.
+    expect(page.strokes.single.layer, kBaseLayer);
+
+    page.layers.first.visible = false;
+    final back = NotePage.fromJson(page.toJson());
+    expect(back.layers.map((l) => l.id), [kBaseLayer, 'top']);
+    expect(back.layers.first.visible, isFalse);
+    expect(back.active, 'top');
+    // Items of a removed layer fall back to the bottom one.
+    expect(back.layerOf('gone'), kBaseLayer);
+  });
+
+  test('moving a dashed shape keeps its line style', () {
+    final s = InkStroke(
+      tool: InkTool.pen,
+      color: 0,
+      width: 2,
+      dash: LineStyle.dashed,
+      points: [const InkPoint(0, 0, 0), const InkPoint(10, 0, 0)],
+    );
+    expect(s.transformed(const Offset(5, 5)).dash, LineStyle.dashed);
+  });
+
   test('an empty lasso selects nothing', () {
     final page = NotePage(
       id: 'p',

@@ -60,12 +60,16 @@ class InkStroke {
     required this.width,
     List<InkPoint>? points,
     this.dash = LineStyle.solid,
+    this.layer = kBaseLayer,
   }) : points = points ?? [];
 
   final InkTool tool;
   final int color;
   final double width;
   final LineStyle dash;
+
+  /// The page layer this stroke sits on.
+  final String layer;
   final List<InkPoint> points;
 
   Rect? _bounds;
@@ -89,10 +93,13 @@ class InkStroke {
     Offset d, {
     double k = 1,
     Offset origin = Offset.zero,
+    String? layer,
   }) => InkStroke(
     tool: tool,
     color: color,
     width: width * k,
+    dash: dash,
+    layer: layer ?? this.layer,
     points: [
       for (final p in points)
         InkPoint(
@@ -134,6 +141,7 @@ class InkStroke {
     'color': color,
     'width': width,
     if (dash != LineStyle.solid) 'dash': dash.name,
+    if (layer != kBaseLayer) 'l': layer,
     // Flat list keeps files small: x, y, t, pressure for each point.
     'p': [
       for (final p in points) ...[
@@ -158,6 +166,7 @@ class InkStroke {
         (d) => d.name == j['dash'],
         orElse: () => LineStyle.solid,
       ),
+      layer: j['l'] as String? ?? kBaseLayer,
       points: [
         for (var i = 0; i + 3 < flat.length; i += 4)
           InkPoint(
@@ -181,11 +190,13 @@ class TypedLine {
     this.todo = false,
     this.done = false,
     this.font = '',
+    this.layer = kBaseLayer,
   });
 
   final Rect box;
   final String text;
   final int color;
+  final String layer;
 
   /// Font family name ('' is the system font). Size follows the box height.
   final String font;
@@ -201,6 +212,7 @@ class TypedLine {
     bool? done,
     int? color,
     String? font,
+    String? layer,
   }) => TypedLine(
     box: box ?? this.box,
     text: text ?? this.text,
@@ -208,6 +220,7 @@ class TypedLine {
     todo: todo ?? this.todo,
     done: done ?? this.done,
     font: font ?? this.font,
+    layer: layer ?? this.layer,
   );
 
   bool get rtl => latinShareOf(text) <= 0.5;
@@ -224,6 +237,7 @@ class TypedLine {
     if (todo) 'todo': true,
     if (done) 'done': true,
     if (font.isNotEmpty) 'font': font,
+    if (layer != kBaseLayer) 'l': layer,
   };
 
   factory TypedLine.fromJson(Map<String, dynamic> j) {
@@ -240,6 +254,7 @@ class TypedLine {
       todo: j['todo'] as bool? ?? false,
       done: j['done'] as bool? ?? false,
       font: j['font'] as String? ?? '',
+      layer: j['l'] as String? ?? kBaseLayer,
     );
   }
 }
@@ -261,15 +276,21 @@ double latinShareOf(String text) {
 /// A picture placed on the page. [file] is a name inside the app's image
 /// folder (see ImageStore); [box] is in page coordinates.
 class PageImage {
-  const PageImage({required this.file, required this.box});
+  const PageImage({
+    required this.file,
+    required this.box,
+    this.layer = kBaseLayer,
+  });
   final String file;
   final Rect box;
+  final String layer;
 
-  PageImage copyWith({Rect? box}) =>
-      PageImage(file: file, box: box ?? this.box);
+  PageImage copyWith({Rect? box, String? layer}) =>
+      PageImage(file: file, box: box ?? this.box, layer: layer ?? this.layer);
 
   Map<String, dynamic> toJson() => {
     'file': file,
+    if (layer != kBaseLayer) 'l': layer,
     'b': [
       box.left,
       box.top,
@@ -282,6 +303,7 @@ class PageImage {
     final b = (j['b'] as List).cast<num>();
     return PageImage(
       file: j['file'] as String,
+      layer: j['l'] as String? ?? kBaseLayer,
       box: Rect.fromLTWH(
         b[0].toDouble(),
         b[1].toDouble(),
@@ -302,6 +324,29 @@ class PageContent {
   bool get isEmpty => strokes.isEmpty && typed.isEmpty && images.isEmpty;
 }
 
+const kBaseLayer = 'base';
+
+/// A sheet on the page. Writing goes to the active layer only, and the
+/// eraser and lasso touch only that layer, so other layers stay safe.
+class PageLayer {
+  PageLayer({required this.id, required this.name, this.visible = true});
+  final String id;
+  String name;
+  bool visible;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    if (!visible) 'hidden': true,
+  };
+
+  factory PageLayer.fromJson(Map<String, dynamic> j) => PageLayer(
+    id: j['id'] as String,
+    name: j['name'] as String? ?? '',
+    visible: !(j['hidden'] as bool? ?? false),
+  );
+}
+
 class NotePage {
   NotePage({
     required this.id,
@@ -309,10 +354,38 @@ class NotePage {
     List<InkStroke>? strokes,
     List<TypedLine>? typed,
     List<PageImage>? images,
+    List<PageLayer>? layers,
+    String? active,
     this.text,
   }) : strokes = strokes ?? [],
        typed = typed ?? [],
-       images = images ?? [];
+       images = images ?? [],
+       layers = (layers == null || layers.isEmpty)
+           ? [PageLayer(id: kBaseLayer, name: 'طبقة 1')]
+           : layers {
+    this.active = active ?? this.layers.last.id;
+  }
+
+  /// Bottom first; the last one is drawn on top.
+  final List<PageLayer> layers;
+  String _active = kBaseLayer;
+
+  /// The layer new writing goes to.
+  String get active => _active;
+  set active(String id) =>
+      _active = layers.any((l) => l.id == id) ? id : layers.last.id;
+
+  /// The layer an item belongs to, counting unknown layers (say, after a
+  /// layer was deleted and undo brought its items back) as the bottom one.
+  String layerOf(String id) =>
+      layers.any((l) => l.id == id) ? id : layers.first.id;
+
+  bool isActive(String layer) => layerOf(layer) == _active;
+
+  bool isVisible(String layer) {
+    final id = layerOf(layer);
+    return layers.firstWhere((l) => l.id == id).visible;
+  }
 
   final String id;
   PageTemplate template;
@@ -340,6 +413,11 @@ class NotePage {
     'strokes': [for (final s in strokes) s.toJson()],
     if (typed.isNotEmpty) 'typed': [for (final t in typed) t.toJson()],
     if (images.isNotEmpty) 'images': [for (final i in images) i.toJson()],
+    if (layers.length > 1 ||
+        layers.first.id != kBaseLayer ||
+        !layers.first.visible)
+      'layers': [for (final l in layers) l.toJson()],
+    if (layers.length > 1) 'active': active,
     if (text != null) 'text': text,
   };
 
@@ -358,6 +436,11 @@ class NotePage {
       for (final i in (j['images'] as List? ?? []))
         PageImage.fromJson(i as Map<String, dynamic>),
     ],
+    layers: [
+      for (final l in (j['layers'] as List? ?? []))
+        PageLayer.fromJson(l as Map<String, dynamic>),
+    ],
+    active: j['active'] as String?,
     text: j['text'] as String?,
   );
 }
