@@ -94,26 +94,41 @@ class NotebookStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _write(Notebook book) async {
+  final Map<String, Future<void>> _writing = {};
+
+  /// Writes one notebook. Writes of the same notebook run one after another,
+  /// so a slow save never overwrites a newer one.
+  Future<void> _write(Notebook book) {
     _pending.remove(book.id);
-    final file = File('${_dir.path}/${book.id}.json');
-    final tmp = File('${file.path}.tmp');
-    await tmp.writeAsString(jsonEncode(book.toJson()));
-    await tmp.rename(file.path);
+    final previous = _writing[book.id] ?? Future.value();
+    final next = previous
+        .then((_) async {
+          if (!_books.containsKey(book.id)) return;
+          final file = File('${_dir.path}/${book.id}.json');
+          final tmp = File('${file.path}.tmp');
+          await tmp.writeAsString(jsonEncode(book.toJson()));
+          await tmp.rename(file.path);
+        })
+        .catchError((Object e) => debugPrint('Saving ${book.id} failed: $e'));
+    _writing[book.id] = next;
+    return next;
   }
 
   Future<void> flush() async {
     for (final id in _pending.keys.toList()) {
       _pending.remove(id)?.cancel();
       final book = _books[id];
-      if (book != null) await _write(book);
+      if (book != null) _write(book);
     }
+    await Future.wait(_writing.values);
   }
 
   Future<void> delete(Notebook book) async {
     _pending.remove(book.id)?.cancel();
     _books.remove(book.id);
     notifyListeners();
+    await _writing[book.id];
+    _writing.remove(book.id);
     final file = File('${_dir.path}/${book.id}.json');
     if (await file.exists()) await file.delete();
     final audio = audioDir(book.id);

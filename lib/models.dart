@@ -71,8 +71,9 @@ class InkStroke {
     final r2 = (radius + width / 2) * (radius + width / 2);
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
-      if ((p.x - at.dx) * (p.x - at.dx) + (p.y - at.dy) * (p.y - at.dy) <= r2)
+      if ((p.x - at.dx) * (p.x - at.dx) + (p.y - at.dy) * (p.y - at.dy) <= r2) {
         return true;
+      }
       if (i > 0 && _segmentDistance2(points[i - 1], p, at) <= r2) return true;
     }
     return false;

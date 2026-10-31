@@ -1,16 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:futurenote/main.dart';
+import 'package:futurenote/models.dart';
 import 'package:futurenote/recognition.dart';
-import 'package:google_mlkit_digital_ink_recognition/google_mlkit_digital_ink_recognition.dart'
-    as mlkit;
 
-StrokeData stroke(List<List<double>> pts) {
-  final s = StrokeData(3);
-  for (final p in pts) {
-    s.points.add(mlkit.StrokePoint(x: p[0], y: p[1], t: 0));
-  }
-  return s;
-}
+InkStroke stroke(List<List<double>> pts) => InkStroke(
+  tool: InkTool.pen,
+  color: 0,
+  width: 3,
+  points: [for (final p in pts) InkPoint(p[0], p[1], 0)],
+);
 
 void main() {
   test('tall word crossing a ruled line stays one line, dots join it', () {

@@ -52,8 +52,9 @@ class HandwritingReader {
   Future<bool> _ensure(String code) async {
     if (!await _models.isModelDownloaded(code)) {
       if (code == primary) state.value = ReaderState.downloading;
-      if (!await _models.downloadModel(code, isWifiRequired: false))
+      if (!await _models.downloadModel(code, isWifiRequired: false)) {
         return false;
+      }
     }
     _recognizers[code] = mlkit.DigitalInkRecognizer(languageCode: code);
     return true;
